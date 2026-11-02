@@ -110,6 +110,23 @@ The study needs the representative candidate assets under `build/p4a/grids/`; re
 `tools/bake_luts.py --camera-ev`/`--stops-above-midgray` if the directory is empty. The results
 are physical-faithfulness numbers and are deliberately **not** part of `npm test`.
 
+### Phase 5a spatial-effect study
+
+`tools/study_effects.py` measures the grain statistics and the halation radial profile of the
+**full `simulate()`** pipeline (grain on minus off, halation on minus off) at a defined output
+scale, and writes `docs/effects-physics.json`. `tools/derive_effects.py` turns those
+measurements into the shared model in `utils/effects.js` (the grain amplitude curve, the grain
+colour mixing matrix and the per-stock halation constants). `tools/effects_tables.py --write`
+refreshes the measured tables inside `docs/EFFECTS.md`.
+
+```bash
+cd harness && npm run study:effects     # or: python tools/study_effects.py --resume
+```
+
+The study needs the `/workspace/venv-sf` environment and about six minutes. Its numbers are
+physical-reference numbers and are deliberately **not** part of `npm test`; the shader side of the
+comparison is verified by `harness/test-effects.mjs`.
+
 ## Stocks and print choices
 
 `tools/stocks.json` is the authoritative list and records each rationale:

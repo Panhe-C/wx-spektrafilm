@@ -70,6 +70,12 @@ function createInstance() {
     getAdjustments() {
       return instance.renderer.adjustments || {};
     },
+    setEffects(state) {
+      instance.renderer.effects = state;
+    },
+    getEffects() {
+      return instance.renderer.effects || {};
+    },
     setLut() {},
     setExtendedLut() {
       instance.renderer.extendedReady = true;
@@ -158,6 +164,40 @@ assert.deepEqual(instance.adjustments, {
 assert.equal(instance.data.resetEnabled, false);
 assert.equal(instance.data.readouts.intensity, '100%');
 assert.equal(instance.data.hasPhoto, true);
+
+// --- spatial effects ------------------------------------------------------
+
+assert.deepEqual(instance.effects, { grain: 1, halation: 1, vignette: 0 });
+instance.applyEffect('grain', 0.5, true);
+assert.equal(instance.effects.grain, 0.5);
+assert.equal(instance.renderer.getEffects().grain, 0.5);
+assert.equal(instance.data.effectReadouts.grain, '50%');
+assert.equal(instance.data.resetEnabled, true);
+
+instance.applyEffect('halation', 2, true);
+assert.equal(instance.effects.halation, 2);
+instance.applyEffect('vignette', 0.4, true);
+assert.equal(instance.effects.vignette, 0.4);
+assert.equal(instance.data.effectReadouts.vignette, '40%');
+
+// The effects are clamped to their limits.
+instance.applyEffect('grain', 5, true);
+assert.equal(instance.effects.grain, 2);
+instance.applyEffect('vignette', -1, true);
+assert.equal(instance.effects.vignette, 0);
+
+// The effect reset restores the shipped defaults only.
+instance.onResetEffects();
+assert.deepEqual(instance.effects, { grain: 1, halation: 1, vignette: 0 });
+assert.equal(instance.adjustments.ev, 0);
+
+// The global reset restores the adjustments and the effects together.
+instance.applyEffect('grain', 0.25, true);
+instance.applyAdjustment('ev', 1, true);
+instance.onResetAdjustments();
+assert.deepEqual(instance.effects, { grain: 1, halation: 1, vignette: 0 });
+assert.equal(instance.adjustments.ev, 0);
+assert.equal(instance.data.resetEnabled, false);
 
 // --- press and hold compare -------------------------------------------------
 

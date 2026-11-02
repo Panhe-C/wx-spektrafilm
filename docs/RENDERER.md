@@ -8,8 +8,10 @@ The renderer applies the derived CC BY-SA 4.0 LUT/profile data without adding an
 The canonical shader sources are:
 
 - `shaders/lut.vert.glsl` — full-screen WebGL1 quad and image texture coordinates;
-- `shaders/lut.frag.glsl` — tiled-grid trilinear LUT lookup, camera-side gain, intensity mix, and
-  the optional post-LUT contrast/saturation stage.
+- `shaders/lut.frag.glsl` — tiled-grid trilinear LUT lookup, camera-side gain, intensity mix, the
+  optional post-LUT contrast/saturation stage, and the spatial effects (grain, halation, vignette);
+- `shaders/halo.frag.glsl` — the helper pass of the halation effect: the linear exposure pass and
+  the separable nine-tap Gaussian blur.
 
 WeChat cannot portably fetch a `.glsl` asset as source text, so `tools/embed_shaders.py` writes the
 committed `utils/shaders.js` CommonJS module. After changing GLSL, run:
@@ -69,6 +71,15 @@ The LUT uniforms are:
 | `uContrast` | Contrast slope about encoded 0.5 (`1 + contrast`) |
 | `uSaturation` | Rec.709 encoded-luma saturation multiplier |
 | `uPostIdentity` | 1 skips the non-physical contrast/saturation stage |
+| `uImageFrameOrigin` / `uImageFrameSize` | the picture's rectangle in the normalised frame space |
+| `uRegionOrigin` / `uRegionSize` | the rectangle this draw covers, in the same frame space |
+| `uGrainStrength` | grain strength 0…2 |
+| `uGrainGrid` | the grain lattice spacing in frame units |
+| `uGrainCurve` | 17-point grain amplitude versus output level (per stock) |
+| `uGrainMatrix` | the grain colour mixing matrix (Cholesky of the measured covariance) |
+| `uHaloEnabled` / `uHaloStrength` | the halation switch and the per-channel coefficient |
+| `uHaloUvScale` / `uHaloUvOffset` | the mapping from the drawn rectangle to the halo buffer |
+| `uVignetteStrength` | vignette strength 0…1 |
 
 ## Exact tiled lookup and half-texel rule
 
@@ -125,6 +136,32 @@ resident:
 bit-identical to the Phase-3 result instead of depending on an sRGB↔linear round trip. Intensity 0
 returns the untouched original before any adjustment is applied.
 
+## Spatial effects
+
+`renderer.setEffects({ grain, halation, vignette })` sets the effect state; `renderer.getEffects()`
+reads it back, and `renderToPixels({ effects })` can override it for one render (the preset
+thumbnails use that to stay free of effects). With every effect at strength 0 the shader keeps the
+exact Phase-4 path: the sRGB round trip is only taken when a camera adjustment, the halation or
+the vignette is active, so the output is bit-identical to the Phase-3/4 result.
+
+The **halation** needs two extra offscreen buffers and three passes:
+
+```text
+photo texture → exposure pass (sRGB → linear, camera gain, /4 headroom) → halo A
+halo A → horizontal nine-tap Gaussian → halo B
+halo B → vertical nine-tap Gaussian → halo A
+main pass: exposure + a·halo A → LUT → intensity mix → post → grain → vignette
+```
+
+The kernel sigma is `sigma_h·sqrt(11/7)·longEdgePx/35000`, the equivalent of the physical
+three-bounce sum, and it is truncated at ±2 sigma. The kernel therefore never reaches beyond
+`2·sigma` pixels, which bounds the tile margin a tiled export needs
+(`Effects.halationMarginPixels`).
+
+Everything that depends on position (the grain lattice, the vignette) is a function of the
+**global** frame position, so a tiled export (Phase 5b) stays continuous across the tile borders.
+The physical model, the measurements and the divergences are documented in `docs/EFFECTS.md`.
+
 ## Offscreen rendering and thumbnails
 
 `renderer.renderToPixels({ width, height, intensity, adjustments, onTiming })` renders into a
@@ -176,7 +213,8 @@ comparison does not hide errors behind two different resizers.
 `harness/out/` contains `<stock>/<photo>-shader.png`, `-python.png`, and `-diff.png` for every pair,
 `adjustments/<stock>/…` for every EV/WB/post case, `thumbs/` for the generated thumbnails, plus
 `report.json`, `report.md`, `inputs/`, `contact-shader.jpg`, `contact-adjust.jpg`, and
-`contact-thumbs.jpg`. Diff images show absolute 8-bit channel differences amplified 16×. The harness
+`contact-thumbs.jpg`. The spatial-effect suite adds `effects/` with the effect renders,
+`effects-report.json`, `effects-report.md`, `contact-effects.jpg` and `grain-compare.jpg`. Diff images show absolute 8-bit channel differences amplified 16×. The harness
 fails unless every pair has mean ΔE2000 < 0.3 and max ΔE2000 < 2.0. It also checks intensity 0 and
 0.5 for every stock on the first photo; zero must match the original within one code even with
 extreme EV/WB/post settings applied, and half intensity must match the unrounded-Python-LUT

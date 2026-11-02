@@ -1,4 +1,4 @@
-/* global SpektrafilmRenderer, SpektrafilmAdjustments, SpektrafilmUiState */
+/* global SpektrafilmRenderer, SpektrafilmAdjustments, SpektrafilmEffects, SpektrafilmUiState */
 (function initialiseHarness() {
   let renderer = null;
   let manifest = null;
@@ -27,15 +27,17 @@
   }
 
   async function initialise() {
-    const [manifestResponse, vertexResponse, fragmentResponse] = await Promise.all([
+    const [manifestResponse, vertexResponse, fragmentResponse, haloResponse] = await Promise.all([
       fetch('/subpackages/luts/luts.json'),
       fetch('/shaders/lut.vert.glsl'),
       fetch('/shaders/lut.frag.glsl'),
+      fetch('/shaders/halo.frag.glsl'),
     ]);
     manifest = await manifestResponse.json();
     renderer = SpektrafilmRenderer.createRenderer(canvas, {
       vertexSource: await vertexResponse.text(),
       fragmentSource: await fragmentResponse.text(),
+      haloFragmentSource: await haloResponse.text(),
     });
     const debug = renderer.gl.getExtension('WEBGL_debug_renderer_info');
     return {
@@ -137,12 +139,14 @@
     selectCachedStock(id, false);
   }
 
-  async function render(id, intensity, adjustments) {
+  async function render(id, intensity, adjustments, effects) {
     const state = { ...DEFAULTS, ...(adjustments || {}) };
+    const effectState = { ...SpektrafilmEffects.EFFECT_DEFAULTS, ...(effects || {}) };
     const needsExtended = state.ev > 0 || state.temperature !== 0 || state.tint !== 0;
     const images = needsExtended ? await ensureExtended(id) : await cacheStock(id);
     renderer.setLut(images.base, stockById(id), needsExtended ? images.extended : null);
     renderer.setAdjustments(state);
+    renderer.setEffects(effectState);
     const start = performance.now();
     renderer.render(intensity);
     renderer.finish();
@@ -153,7 +157,73 @@
       width: canvas.width,
       height: canvas.height,
       adjustments: renderer.getAdjustments(),
+      effects: renderer.getEffects(),
       dataUrl: canvas.toDataURL('image/png'),
+    };
+  }
+
+  // Render into an offscreen buffer of an explicit size, so that the
+  // resolution independence of the effects can be measured.
+  async function renderSized(id, width, height, adjustments, effects) {
+    const state = { ...DEFAULTS, ...(adjustments || {}) };
+    const effectState = { ...SpektrafilmEffects.EFFECT_DEFAULTS, ...(effects || {}) };
+    const images = await cacheStock(id);
+    renderer.setLut(images.base, stockById(id), null);
+    renderer.setAdjustments(state);
+    renderer.setEffects(effectState);
+    const start = performance.now();
+    const result = renderer.renderToPixels({
+      width,
+      height,
+      intensity: 1,
+      adjustments: state,
+      effects: effectState,
+    });
+    renderer.finish();
+    const renderMs = performance.now() - start;
+    const output = document.createElement('canvas');
+    output.width = width;
+    output.height = height;
+    const context = output.getContext('2d', { alpha: false });
+    context.putImageData(new ImageData(new Uint8ClampedArray(result.pixels), width, height), 0, 0);
+    return {
+      renderMs,
+      timing: result.timing,
+      width,
+      height,
+      dataUrl: output.toDataURL('image/png'),
+    };
+  }
+
+  // Upload an arbitrary PNG data URL as the photo, so that synthetic
+  // patches (flat grey fields, a bright disc) can be measured.
+  async function setPhotoData(dataUrl, width, height) {
+    if (photoBitmap) {
+      photoBitmap.close();
+      photoBitmap = null;
+    }
+    const response = await fetch(dataUrl);
+    const blob = await response.blob();
+    photoBitmap = await createImageBitmap(blob, {
+      colorSpaceConversion: 'none',
+      imageOrientation: 'from-image',
+      premultiplyAlpha: 'none',
+    });
+    inputCanvas = document.createElement('canvas');
+    inputCanvas.width = width || photoBitmap.width;
+    inputCanvas.height = height || photoBitmap.height;
+    const context = inputCanvas.getContext('2d', { alpha: false });
+    context.imageSmoothingEnabled = false;
+    context.drawImage(photoBitmap, 0, 0, inputCanvas.width, inputCanvas.height);
+    renderer.resize(inputCanvas.width, inputCanvas.height);
+    renderer.setPhoto(inputCanvas);
+    renderer.setAdjustments(DEFAULTS);
+    renderer.setEffects(SpektrafilmEffects.EFFECT_DEFAULTS);
+    renderer.render(0);
+    renderer.finish();
+    return {
+      width: inputCanvas.width,
+      height: inputCanvas.height,
     };
   }
 
@@ -169,6 +239,8 @@
       height: size.height,
       intensity: 1,
       adjustments: DEFAULTS,
+      // The preset thumbnails never include the spatial effects.
+      effects: SpektrafilmEffects.EFFECT_DEFAULTS,
     });
     const switchMs = performance.now() - started;
     const restored = renderer.gl.getParameter(renderer.gl.FRAMEBUFFER_BINDING) === null;
@@ -233,9 +305,14 @@
 
   window.spektrafilmHarness = {
     initialise,
+    getRenderer() {
+      return renderer;
+    },
     loadPhoto,
     loadStock,
     render,
+    renderSized,
+    setPhotoData,
     thumbnail,
     timeStockSwitch,
     verifyLutContract,

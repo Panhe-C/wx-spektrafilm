@@ -20,6 +20,7 @@ scrollable body with three sections, and a pinned action bar.
 ├── .body-scroll            <scroll-view scroll-y>
 │   ├── 胶片预设             three category sections, cards with name / ISO / description / thumbnail
 │   ├── 调整                 曝光 EV, 色温, 色调, 强度, 后期微调（对比度, 饱和度）, 重置
+│   ├── 效果                 颗粒, 光晕, 暗角, 重置效果
 │   └── 关于                 attribution, licence, version, effect-scope note
 └── .actions                从相册选择 / 拍照 / 清除  (+ safe-area padding)
 ```
@@ -65,6 +66,23 @@ stock, and it is disabled while everything is already at the default.
 
 Press-and-hold on the preview still shows the untouched original; the shader short-circuits at
 intensity 0, so the comparison is unaffected by any adjustment.
+
+### Effects panel (「效果」)
+
+| Control | Range | Step | Physical? |
+|---|---|---|---|
+| 颗粒 (grain) | 0 … 2 | 0.05 | approximate — measured from the physical pipeline |
+| 光晕 (halation) | 0 … 2 | 0.05 | approximate — physical back-reflection parameters |
+| 暗角 (vignette) | 0 … 1 | 0.02 | **no** — a lens falloff, not part of the film model |
+
+The panel carries its own 「重置效果」 button; the global 「重置」 in the adjustments panel restores
+the adjustments **and** the effects to the shipped defaults (grain 100 %, halation 100 %,
+vignette 0 %). The panel states that the grain and the halation are approximations and that the
+preset thumbnails do not include them.
+
+The effects are applied by the renderer, not by the page: the page owns the state, calls
+`renderer.setEffects()` and redraws, exactly like the adjustment sliders. The preset thumbnails are
+rendered with the effects switched off (`renderToPixels({ effects: … })`).
 
 ## Phase state machine
 
@@ -174,7 +192,12 @@ boots under a mocked WeChat host, the phase machine drives the busy mask, the sl
 renderer while the readouts stay throttled, the reset restores every default, press-and-hold
 compares, the thumbnail path degrades to a placeholder when the export fails, and every WXML
 handler exists on the page), and then the headless Chrome/SwiftShader comparison against the NumPy
-references, including the thumbnail path and the stock-switch timing.
+references, including the thumbnail path and the stock-switch timing, followed by the
+**spatial-effect suite** (`harness/test-effects.mjs`): determinism, the identity of the
+strength-0 path against `tools/lut_apply.py`, the scale invariance of the grain statistics, the
+agreement with the NumPy mirror of the grain maths, the halation radial profile against the
+physical study, the effect timing at 1280 px and the physical halation reference on a real
+photograph.
 
 `python3 tools/check_miniprogram.py` additionally checks that every WXML handler exists on the
 page, that the tags balance, that every `{{…}}` identifier resolves to page data or a `wx:for`
@@ -210,11 +233,17 @@ debug session). None of them is covered by the headless harness.
 11. **Press and hold** — holding the preview shows the untouched original, even with EV, white
     balance, contrast and saturation set to extreme values.
 12. **About** — the 「关于」 section shows the spektrafilm credit, the project URL (tap to copy),
-    the licence split (GPLv3 code / CC BY-SA 4.0 data), the version, and the note that grain and
-    halation are not included.
+    the licence split (GPLv3 code / CC BY-SA 4.0 data), the version, and the note that the grain
+    and the halation are approximations.
 13. **Layout** — no horizontal scrolling, no clipped text, no layout jump when a thumbnail
     appears, and the action bar clears the home indicator on notched phones.
 14. **Performance** — dragging a slider stays smooth on a low-end phone; the page must not
     re-render the preset list while a slider moves.
 15. **Package size** — the built package reports a main package below 2 MB and the LUT subpackage
     below 1.2 MB.
+16. **Effects panel** — 颗粒, 光晕 and 暗角 move the preview while the finger is down; the readouts
+    follow; 「重置效果」 restores the three defaults; the global 「重置」 clears the adjustments and
+    the effects together.
+17. **Effect performance** — dragging an effect slider stays smooth on a low-end phone. The
+    halation needs three extra passes (exposure, horizontal blur, vertical blur) and the grain
+    evaluates three noise fields per pixel; both are skipped entirely at strength 0.

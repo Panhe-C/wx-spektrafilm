@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCES = {
     "lutVertex": ROOT / "shaders" / "lut.vert.glsl",
     "lutFragment": ROOT / "shaders" / "lut.frag.glsl",
+    "haloFragment": ROOT / "shaders" / "halo.frag.glsl",
 }
 DESTINATION = ROOT / "utils" / "shaders.js"
 

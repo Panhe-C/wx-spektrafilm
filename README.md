@@ -39,9 +39,14 @@ memory. See `docs/RENDERER.md` and `docs/ORIENTATION.md` for implementation deta
   placeholder instead of a broken image.
 - **Adjustments panel**: 曝光 EV (−2…+2), 色温, 色调, 强度, and a collapsed 「后期微调（非胶片物理）」
   group with 对比度 and 饱和度. One 「重置」 button restores all of them.
+- **Effects panel (「效果」)**: 颗粒 (grain), 光晕 (halation) and 暗角 (vignette). The grain and the
+  halation are approximations whose constants are measured from spektrafilm's full `simulate()`
+  pipeline; the vignette is explicitly non-physical. The panel has its own 「重置效果」 button, and
+  the global 「重置」 restores the adjustments and the effects together. The preset thumbnails never
+  include the effects.
 - **About section**: the spektrafilm credit (Andrea Volpato), the project URL, the licence split
-  (GPLv3 code, CC BY-SA 4.0 LUT data), the version, and the note that grain/halation and other
-  spatial effects are not included.
+  (GPLv3 code, CC BY-SA 4.0 LUT data), the version, and the note that the grain and the halation
+  are approximations and that diffusion filters, glare and sharpening are still missing.
 - The page structure, the phase state machine, the thumbnail path and the real-device checklist
   are documented in `docs/UI.md`.
 
@@ -58,6 +63,28 @@ The base cube `<id>.png` and the extended two-stop cube `<id>.ev2.png` are both 
 extended cube is only fetched when a positive EV or a nonidentity white balance actually needs
 it.
 
+## Spatial effects (grain, halation, vignette)
+
+Phase 5a adds approximate spatial effects on top of the LUT. The constants are not hand tuned:
+`tools/study_effects.py` measures the grain statistics and the halation profile of the full
+spektrafilm `simulate()` pipeline, and `tools/derive_effects.py` turns those measurements into the
+shared model in `utils/effects.js`.
+
+- **Grain** is a deterministic hash-based value-noise field on a lattice in the normalised frame
+  space, so the preview (1280 px) and a full-resolution export show the same grain relative to the
+  picture. Its amplitude follows the measured grain-versus-level curve of the stock, and its
+  red/green/blue correlation follows the measured mid-tone covariance.
+- **Halation** is a red-weighted highlight bloom: the linear exposure is blurred with the
+  frame-relative physical sigma (65 µm for a still film, 50 µm for a cinema film) and added back
+  with the stock's physical `halation_strength`, before the LUT, exactly where the physical
+  pipeline applies it.
+- **Vignette** is a simple radial falloff on the linear exposure and is labelled non-physical.
+- With every effect at strength 0 the output is bit-identical to the Phase-4 path.
+
+`docs/EFFECTS.md` documents the pipeline order, the per-stock parameters, the physics-versus-shader
+tables and the eight explicit divergences (the largest one: the physical in-emulsion scatter term
+is sub-pixel at the preview scale and cannot be reproduced by a multi-tap WebGL kernel).
+
 ## Verification
 
 ```sh
@@ -71,13 +98,18 @@ npm test
 
 # Optional: re-run the physical EV/WB faithfulness study against full simulate()
 npm run study:ev
+
+# Optional: re-run the physical grain/halation study and regenerate the effect constants
+npm run study:effects
 ```
 
 The harness expects `/workspace/testphotos/p*.jpg`, Chrome at `/usr/bin/google-chrome`, and the
 Python scientific environment described in `docs/RENDERER.md`. It runs the orientation policy and
-matrix unit tests, the adjustment-mapping unit tests, the UI-state unit tests, and the page-wiring
-tests before launching Chrome. It writes `harness/out/report.{json,md}`, per-pair shader/Python/diff PNGs, per-adjustment
-PNGs, thumbnails, and `harness/out/contact-{shader,adjust,thumbs}.jpg`. Outputs and test photos
+matrix unit tests, the adjustment-mapping unit tests, the UI-state unit tests, the effect-model unit
+tests, and the page-wiring tests before launching Chrome. It writes `harness/out/report.{json,md}`, per-pair shader/Python/diff PNGs, per-adjustment
+PNGs, thumbnails, `harness/out/contact-{shader,adjust,thumbs}.jpg`, and — from the spatial-effect
+suite — `harness/out/contact-effects.jpg`, `harness/out/grain-compare.jpg` and
+`harness/out/effects-report.{json,md}`. Outputs and test photos
 are not committed. A real AppID/private key would be needed for `miniprogram-ci`; static and
 headless checks do not replace WeChat DevTools or physical-device testing.
 
@@ -92,13 +124,13 @@ contains the per-stock and per-photo tables. These are headless measurements, no
 
 - `app.js`, `app.json`, `app.wxss` — Mini Program entry
 - `pages/` — native picker, preset picker, adjustments panel and about page
-- `utils/`, `renderer/` — shared WebGL renderer, adjustment mapping, UI state policy, thumbnail export, generated GLSL module, photo preparation, fallback stub
+- `utils/`, `renderer/` — shared WebGL renderer, adjustment mapping, spatial-effect model, UI state policy, thumbnail export, generated GLSL module, photo preparation, fallback stub
 - `shaders/` — canonical WebGL1 GLSL sources shared with the headless harness
 - `subpackages/luts/` — lazily loaded LUTs/manifest plus the required no-op subpackage page
 - `harness/` — Puppeteer/Chrome and NumPy numerical verification (not shipped in the app)
 - `tools/` — Python LUT tooling and static Mini Program checks (uses `/workspace/venv-sf`)
 - `assets/` — other static assets
-- `docs/` — format, renderer, adjustments, UI, orientation, exposure, limitations, validation, and previews
+- `docs/` — format, renderer, adjustments, effects, UI, orientation, exposure, limitations, validation, and previews
 
 ## Film LUT scope
 
@@ -109,9 +141,9 @@ exposure choice and `docs/validation.md` for LUT-versus-full-`simulate()` fideli
 
 A static LUT excludes grain, halation/scatter, diffusion filters, lens/scan blur, glare, scanner
 unsharp masking, DIR-coupler spatial diffusion, and all other spatial or stochastic effects.
-Those effects are planned as separate later WebGL shaders (including grain, halation bloom, and
-vignette-like diffusion), not hidden inside the colour tables. `docs/LIMITATIONS.md` details this
-boundary and the exposure/tonality trade-offs.
+Phase 5a implements the grain, the halation and the vignette as **separate** WebGL effects on top
+of the LUT, not hidden inside the colour tables; diffusion filters, glare and sharpening remain
+unimplemented. `docs/LIMITATIONS.md` details this boundary and the exposure/tonality trade-offs.
 
 The tiled-grid PNG layout and shader half-texel/trilinear contract are in `docs/LUT_FORMAT.md`.
 The shipped assets use **N=33** for the native look plus an **N=49** two-stop extended-range cube

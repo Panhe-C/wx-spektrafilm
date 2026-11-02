@@ -13,6 +13,11 @@ neutralization, or post-simulation curve.
 
 ## Spatial and stochastic effects excluded from the LUT
 
+Phase 5a adds **approximate** grain, halation and vignette on top of the LUT. They are *not* part
+of the LUT and they are *not* a faithful reproduction of the physical effects; `docs/EFFECTS.md`
+documents the model, the measurements and the divergences. The list below stays the description of
+what the **LUT itself** contains.
+
 A three-dimensional colour LUT cannot represent effects that depend on neighbouring pixels,
 image coordinates, film geometry, random samples, or whole-image statistics. The following are
 **disabled in both bake and reference and are not present in the delivered PNGs**:
@@ -32,6 +37,31 @@ These are candidates for separate later WebGL passes: grain synthesis, halation/
 diffusion filters and vignette-like diffusion, blur/sharpening, and glare. Adding them after the
 LUT will not make the current validation metrics apply to those future effects; each will need its
 own full-pipeline comparison.
+
+## The Phase-5a spatial effects are approximations
+
+- The **grain** is a value-noise field whose standard deviation, spatial autocorrelation and
+  red/green/blue correlation are fitted to the measured physical grain, but the fine structure is
+  not the physical particle sum. The physical correlation is level dependent (0.95 in the deep
+  shadows, 0.2 in the mid-tones); the shader uses one mid-tone mixing matrix. The measured
+  amplitude of the rendered 8-bit image is 0.455 / 0.236 / 0.048 at the lags (1,0), (1,1), (2,0)
+  against the physical 0.518 / 0.269 / 0.093.
+- The physical grain statistics only exist together with an **output scale** (spektrafilm derives
+  the film-plane pixel size from the image size). The shader's lattice is anchored at the 1280 px
+  preview, so a 4096 px export shows a grain that is about 3.2× finer relative to the frame than a
+  physical 4096 px simulation would.
+- The **halation** implements the physical back-reflection halo only (65 µm for a still film, 50 µm
+  for a cinema film, with the stock's `halation_strength`). The physical in-emulsion scatter term
+  has a 9.3 µm decay constant — 0.34 px at the preview scale — and degenerates into a one-pixel
+  ring whose amplitude depends on the sampling grid (85 codes at 1280 px, 130 codes at 2560 px).
+  It cannot be represented by a bilinear multi-tap kernel, so the shader shows about eight times
+  less halation energy (RMS) than the physical pipeline on a real photograph.
+- The **vignette** has no physical counterpart and is labelled non-physical in the UI.
+- The preset thumbnails never include the effects, so a thumbnail shows the stock's colour look
+  only.
+- The effects have only been verified in the headless SwiftShader harness; the framebuffer
+  ping-pong used by the halation chain and the effect timing on a real device still need the
+  device checklist in `docs/UI.md`.
 
 ## Exposure, EV, and white balance
 
@@ -145,8 +175,9 @@ references remain on the build box; they are not committed to the Mini Program p
 
 ## Still deferred to later phases
 
-Grain, halation/scatter, diffusion, blur/sharpening, glare, export/save, privacy review, and
-release work remain unimplemented. The presets picker, the adjustments panel, and the about
-section are implemented (Phase 4b, `docs/UI.md`); the exposure, white-balance, and post-LUT
+Diffusion filters, blur/sharpening, glare, export/save, privacy review, and release work remain
+unimplemented. The presets picker, the adjustments panel, the spatial-effect panel, and the about
+section are implemented (Phase 4b and 5a, `docs/UI.md`); the exposure, white-balance, and post-LUT
 controls are exposed in the UI and remain backed by the verified renderer API
-(`docs/ADJUSTMENTS.md`).
+(`docs/ADJUSTMENTS.md`), and the grain, halation and vignette are exposed through
+`renderer.setEffects()` and documented in `docs/EFFECTS.md`.

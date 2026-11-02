@@ -2,11 +2,15 @@ const shaders = require('../../utils/shaders.js');
 const { createRenderer } = require('../../utils/lut-renderer.js');
 const { loadCanvasImage, preparePhoto } = require('../../utils/photo.js');
 const Adjustments = require('../../utils/adjust.js');
+const Effects = require('../../utils/effects.js');
 const ui = require('../../utils/ui-state.js');
 const thumbnails = require('../../utils/thumbnail.js');
 const appInfo = require('../../utils/app-info.js');
 
 const DEFAULT_ADJUSTMENTS = ui.ADJUSTMENT_DEFAULTS;
+// The spatial effects are approximate. They are on by default at their
+// physical-ish level; see docs/EFFECTS.md for the measured differences.
+const APP_EFFECT_DEFAULTS = Object.freeze({ grain: 1, halation: 1, vignette: 0 });
 
 Page({
   data: {
@@ -21,6 +25,7 @@ Page({
     selectedStockName: '',
     adjustOpen: true,
     postOpen: false,
+    effectsOpen: true,
     aboutOpen: false,
     comparing: false,
     extendedLoading: false,
@@ -41,6 +46,16 @@ Page({
       contrast: '0.00',
       saturation: '100%',
     },
+    effects: {
+      grain: 1,
+      halation: 1,
+      vignette: 0,
+    },
+    effectReadouts: {
+      grain: '100%',
+      halation: '100%',
+      vignette: '0%',
+    },
     resetEnabled: false,
     version: appInfo.version,
     sourceUrl: appInfo.sourceUrl,
@@ -56,6 +71,7 @@ Page({
     this.photoSize = null;
     this.photoId = 0;
     this.adjustments = Object.assign({}, DEFAULT_ADJUSTMENTS);
+    this.effects = Effects.normalize(APP_EFFECT_DEFAULTS);
     this.comparing = false;
     this.activeStock = null;
     this.thumbs = Object.create(null);
@@ -137,8 +153,10 @@ Page({
           this.renderer = createRenderer(this.canvas, {
             vertexSource: shaders.lutVertex,
             fragmentSource: shaders.lutFragment,
+            haloFragmentSource: shaders.haloFragment,
           });
           this.renderer.resize(1, 1);
+          this.renderer.setEffects(this.effects);
           this.setData({ ready: true, error: '' });
         } catch (error) {
           if (error.code === 'WEBGL_UNAVAILABLE') {
@@ -391,14 +409,68 @@ Page({
     }
   },
 
+  // The single reset restores every adjustment and every spatial effect to
+  // the shipped defaults. It does not touch the photo or the selected stock.
   onResetAdjustments() {
     this.adjustments = ui.resetAdjustments();
+    this.effects = Effects.normalize(APP_EFFECT_DEFAULTS);
     if (this.renderer) {
       this.renderer.setAdjustments(this.adjustments);
+      this.renderer.setEffects(this.effects);
     }
     this.renderPreview();
-    this.setData({ adjustments: Object.assign({}, this.adjustments) });
+    this.setData({
+      adjustments: Object.assign({}, this.adjustments),
+      effects: Object.assign({}, this.effects),
+    });
     this.flushReadouts();
+  },
+
+  // --- spatial effects -----------------------------------------------------
+
+  onEffectChanging(event) {
+    this.applyEffect(event.currentTarget.dataset.key, event.detail.value, false);
+  },
+
+  onEffectChange(event) {
+    this.applyEffect(event.currentTarget.dataset.key, event.detail.value, true);
+  },
+
+  applyEffect(key, rawValue, commit) {
+    let next = null;
+    try {
+      next = Effects.merge(this.effects, { [key]: rawValue });
+    } catch (error) {
+      return;
+    }
+    this.effects = next;
+    if (this.renderer) {
+      this.renderer.setEffects(next);
+    }
+    this.renderPreview();
+    if (commit) {
+      this.setData({ effects: Object.assign({}, next) });
+      this.flushReadouts();
+    } else {
+      this.scheduleReadouts();
+    }
+  },
+
+  // The global reset restores the adjustments and the spatial effects.
+  onResetEffects() {
+    this.effects = Effects.normalize(APP_EFFECT_DEFAULTS);
+    if (this.renderer) {
+      this.renderer.setEffects(this.effects);
+    }
+    this.renderPreview();
+    this.setData({ effects: Object.assign({}, this.effects) });
+    this.flushReadouts();
+  },
+
+  isResetState() {
+    return ui.isDefaultState(this.adjustments) && Effects.EFFECT_KEYS.every(
+      (key) => Number(this.effects[key]) === Number(APP_EFFECT_DEFAULTS[key])
+    );
   },
 
   scheduleReadouts() {
@@ -421,7 +493,8 @@ Page({
     this.lastReadoutAt = Date.now();
     this.setData({
       readouts: ui.readouts(this.adjustments),
-      resetEnabled: !ui.isDefaultState(this.adjustments),
+      effectReadouts: Effects.readouts(this.effects),
+      resetEnabled: !this.isResetState(),
     });
   },
 
@@ -580,6 +653,8 @@ Page({
       height: size.height,
       intensity: 1,
       adjustments: Adjustments.DEFAULTS,
+      // The preset thumbnails never include the spatial effects.
+      effects: Effects.EFFECT_DEFAULTS,
     });
     await this.restoreActiveLut(operation);
     if (operation !== this.operationId) {
@@ -684,6 +759,10 @@ Page({
 
   onTogglePost() {
     this.setData({ postOpen: !this.data.postOpen });
+  },
+
+  onToggleEffects() {
+    this.setData({ effectsOpen: !this.data.effectsOpen });
   },
 
   onToggleAbout() {

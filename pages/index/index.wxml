@@ -216,6 +216,76 @@
       </view>
 
       <view class="section">
+        <view class="section-header section-header-tap" bindtap="onToggleEffects">
+          <text class="section-title">效果</text>
+          <text class="section-chevron">{{effectsOpen ? '收起' : '展开'}}</text>
+        </view>
+        <view wx:if="{{effectsOpen}}" class="section-body">
+          <view class="slider-row">
+            <text class="slider-label">颗粒</text>
+            <slider
+              class="control-slider"
+              min="0"
+              max="2"
+              step="0.05"
+              value="{{effects.grain}}"
+              data-key="grain"
+              activeColor="#d6b98a"
+              backgroundColor="#3a3a3a"
+              block-color="#f2dfc0"
+              block-size="18"
+              bindchanging="onEffectChanging"
+              bindchange="onEffectChange"
+            />
+            <text class="slider-value">{{effectReadouts.grain}}</text>
+          </view>
+          <view class="slider-row">
+            <text class="slider-label">光晕</text>
+            <slider
+              class="control-slider"
+              min="0"
+              max="2"
+              step="0.05"
+              value="{{effects.halation}}"
+              data-key="halation"
+              activeColor="#d6b98a"
+              backgroundColor="#3a3a3a"
+              block-color="#f2dfc0"
+              block-size="18"
+              bindchanging="onEffectChanging"
+              bindchange="onEffectChange"
+            />
+            <text class="slider-value">{{effectReadouts.halation}}</text>
+          </view>
+          <view class="slider-row">
+            <text class="slider-label">暗角</text>
+            <slider
+              class="control-slider"
+              min="0"
+              max="1"
+              step="0.02"
+              value="{{effects.vignette}}"
+              data-key="vignette"
+              activeColor="#8fb0d6"
+              backgroundColor="#3a3a3a"
+              block-color="#cfe0f5"
+              block-size="18"
+              bindchanging="onEffectChanging"
+              bindchange="onEffectChange"
+            />
+            <text class="slider-value">{{effectReadouts.vignette}}</text>
+          </view>
+          <view class="group-note">颗粒与光晕是依据 spektrafilm 物理流程测得的近似效果，并非逐像素真实模拟；暗角为非物理的镜头暗角。预设缩略图不包含这些效果。</view>
+          <view class="panel-actions">
+            <button
+              class="reset-button"
+              bindtap="onResetEffects"
+            >重置效果</button>
+          </view>
+        </view>
+      </view>
+
+      <view class="section">
         <view class="section-header section-header-tap" bindtap="onToggleAbout">
           <text class="section-title">关于</text>
           <text class="section-chevron">{{aboutOpen ? '收起' : '展开'}}</text>
@@ -237,7 +307,7 @@
             <text class="about-key">版本</text>
             <text class="about-value">{{version}}</text>
           </view>
-          <view class="about-note">当前未包含颗粒、光晕等空间效果。</view>
+          <view class="about-note">颗粒与光晕为近似效果（详见 docs/EFFECTS.md）；扩散滤镜、耀光、锐化仍未包含。</view>
         </view>
       </view>
 

@@ -3,11 +3,11 @@
 // shaders/*.glsl by the harness. Do not fork the lookup math into either host.
 (function registerRenderer(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('./adjust.js'));
+    module.exports = factory(require('./adjust.js'), require('./effects.js'));
   } else {
-    root.SpektrafilmRenderer = factory(root.SpektrafilmAdjustments);
+    root.SpektrafilmRenderer = factory(root.SpektrafilmAdjustments, root.SpektrafilmEffects);
   }
-}(typeof globalThis !== 'undefined' ? globalThis : this, function rendererFactory(Adjustments) {
+}(typeof globalThis !== 'undefined' ? globalThis : this, function rendererFactory(Adjustments, Effects) {
   const CONTEXT_ATTRIBUTES = {
     alpha: false,
     antialias: false,
@@ -16,6 +16,10 @@
     preserveDrawingBuffer: true,
     premultipliedAlpha: false,
   };
+
+  // The halation exposure buffer keeps two stops of headroom above diffuse
+  // white so that clipped highlights still feed the bloom.
+  const HALO_EXPOSURE_SCALE = 4.0;
 
   function computePreviewSize(width, height, devicePixelRatio, maxTextureSize, longEdge) {
     const targetEdge = longEdge || 1280;
@@ -29,6 +33,18 @@
     return {
       width: Math.max(1, Math.round(width * scale)),
       height: Math.max(1, Math.round(height * scale)),
+    };
+  }
+
+  // Normalised frame space: the long edge of the picture is 1.0. Every
+  // coordinate dependent effect (grain, vignette) is expressed in this space
+  // so that a tiled export is continuous across the tile borders.
+  function computeFrameRect(width, height) {
+    const longEdge = Math.max(width, height);
+    return {
+      origin: [0, 0],
+      size: [width / longEdge, height / longEdge],
+      longEdgePx: longEdge,
     };
   }
 
@@ -69,6 +85,9 @@
     if (!Adjustments) {
       throw new Error('utils/adjust.js must be loaded before the renderer');
     }
+    if (!Effects) {
+      throw new Error('utils/effects.js must be loaded before the renderer');
+    }
     const gl = canvas.getContext('webgl', CONTEXT_ATTRIBUTES) ||
       canvas.getContext('experimental-webgl', CONTEXT_ATTRIBUTES);
     if (!gl) {
@@ -84,16 +103,24 @@
     });
 
     const program = createProgram(gl, options.vertexSource, options.fragmentSource);
+    const haloProgram = options.haloFragmentSource
+      ? createProgram(gl, options.vertexSource, options.haloFragmentSource)
+      : null;
     const buffer = gl.createBuffer();
     const photoTexture = gl.createTexture();
     const lutTexture = gl.createTexture();
     const extendedLutTexture = gl.createTexture();
     const targetTexture = gl.createTexture();
     const targetFramebuffer = gl.createFramebuffer();
+    const haloTextureA = gl.createTexture();
+    const haloTextureB = gl.createTexture();
+    const haloFramebufferA = gl.createFramebuffer();
+    const haloFramebufferB = gl.createFramebuffer();
     const uniforms = {
       image: gl.getUniformLocation(program, 'uImage'),
       lut: gl.getUniformLocation(program, 'uLut'),
       extendedLut: gl.getUniformLocation(program, 'uLutExtended'),
+      halo: gl.getUniformLocation(program, 'uHalo'),
       n: gl.getUniformLocation(program, 'uN'),
       cols: gl.getUniformLocation(program, 'uCols'),
       rows: gl.getUniformLocation(program, 'uRows'),
@@ -107,13 +134,58 @@
       contrast: gl.getUniformLocation(program, 'uContrast'),
       saturation: gl.getUniformLocation(program, 'uSaturation'),
       postIdentity: gl.getUniformLocation(program, 'uPostIdentity'),
+      imageFrameOrigin: gl.getUniformLocation(program, 'uImageFrameOrigin'),
+      imageFrameSize: gl.getUniformLocation(program, 'uImageFrameSize'),
+      regionOrigin: gl.getUniformLocation(program, 'uRegionOrigin'),
+      regionSize: gl.getUniformLocation(program, 'uRegionSize'),
+      grainStrength: gl.getUniformLocation(program, 'uGrainStrength'),
+      grainGrid: gl.getUniformLocation(program, 'uGrainGrid'),
+      grainCurve: gl.getUniformLocation(program, 'uGrainCurve[0]'),
+      grainMatrix: gl.getUniformLocation(program, 'uGrainMatrix'),
+      haloEnabled: gl.getUniformLocation(program, 'uHaloEnabled'),
+      haloStrength: gl.getUniformLocation(program, 'uHaloStrength'),
+      haloUvScale: gl.getUniformLocation(program, 'uHaloUvScale'),
+      haloUvOffset: gl.getUniformLocation(program, 'uHaloUvOffset'),
+      vignetteStrength: gl.getUniformLocation(program, 'uVignetteStrength'),
     };
+    const haloUniforms = haloProgram ? {
+      source: gl.getUniformLocation(haloProgram, 'uSource'),
+      mode: gl.getUniformLocation(haloProgram, 'uMode'),
+      linearGain: gl.getUniformLocation(haloProgram, 'uLinearGain'),
+      blurDirection: gl.getUniformLocation(haloProgram, 'uBlurDirection'),
+      blurSigma: gl.getUniformLocation(haloProgram, 'uBlurSigma'),
+      sourceSize: gl.getUniformLocation(haloProgram, 'uSourceSize'),
+      exposureScale: gl.getUniformLocation(haloProgram, 'uExposureScale'),
+      regionOrigin: gl.getUniformLocation(haloProgram, 'uRegionOrigin'),
+      regionSize: gl.getUniformLocation(haloProgram, 'uRegionSize'),
+      imageFrameOrigin: gl.getUniformLocation(haloProgram, 'uImageFrameOrigin'),
+      imageFrameSize: gl.getUniformLocation(haloProgram, 'uImageFrameSize'),
+    } : null;
+
+    // A missing uniform would silently disable a feature, so the renderer
+    // refuses to start with an incomplete uniform set.
+    const missing = Object.keys(uniforms)
+      .filter((name) => uniforms[name] === null)
+      .map((name) => `u${name[0].toUpperCase()}${name.slice(1)}`);
+    if (haloUniforms) {
+      Object.keys(haloUniforms)
+        .filter((name) => haloUniforms[name] === null)
+        .forEach((name) => missing.push(`halo:${name}`));
+    }
+    if (missing.length) {
+      throw new Error(`The shader is missing required uniforms: ${missing.join(', ')}`);
+    }
+
     let lut = null;
     let hasPhoto = false;
     let destroyed = false;
     let targetWidth = 0;
     let targetHeight = 0;
+    let haloWidth = 0;
+    let haloHeight = 0;
     let adjustments = Adjustments.normalize();
+    let effects = Effects.normalize();
+    let stockEffects = Effects.forStock('portra400');
 
     gl.useProgram(program);
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
@@ -128,6 +200,7 @@
     gl.uniform1i(uniforms.image, 0);
     gl.uniform1i(uniforms.lut, 1);
     gl.uniform1i(uniforms.extendedLut, 2);
+    gl.uniform1i(uniforms.halo, 3);
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.BLEND);
     gl.disable(gl.DITHER);
@@ -151,6 +224,10 @@
     configureTexture(lutTexture);
     gl.activeTexture(gl.TEXTURE2);
     configureTexture(extendedLutTexture);
+    gl.activeTexture(gl.TEXTURE3);
+    configureTexture(haloTextureA);
+    gl.activeTexture(gl.TEXTURE3);
+    configureTexture(haloTextureB);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, targetTexture);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -207,8 +284,9 @@
     // without it raises a clear error in draw().
     function setLut(source, metadata, extendedSource) {
       const base = validateLutMetadata(metadata);
-      lut = Object.assign(base, { extended: null });
+      lut = Object.assign(base, { extended: null, stockId: metadata.id || '' });
       upload(gl.TEXTURE1, lutTexture, source);
+      stockEffects = Effects.forStock(lut.stockId);
       if (metadata.extended && extendedSource) {
         lut.extended = uploadExtended(extendedSource, metadata.extended);
       }
@@ -237,7 +315,122 @@
       return Object.assign({}, adjustments);
     }
 
-    function draw(intensity, adjustmentState) {
+    function setEffects(patch) {
+      effects = Effects.merge(effects, patch);
+      return Object.assign({}, effects);
+    }
+
+    function getEffects() {
+      return Object.assign({}, effects);
+    }
+
+    function ensureHaloTargets(width, height) {
+      if (width === haloWidth && height === haloHeight) {
+        return;
+      }
+      [haloTextureA, haloTextureB].forEach((texture) => {
+        gl.activeTexture(gl.TEXTURE3);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(
+          gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0,
+          gl.RGBA, gl.UNSIGNED_BYTE, null
+        );
+      });
+      gl.bindFramebuffer(gl.FRAMEBUFFER, haloFramebufferA);
+      gl.framebufferTexture2D(
+        gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, haloTextureA, 0
+      );
+      if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        throw new Error('Halation framebuffer is incomplete');
+      }
+      gl.bindFramebuffer(gl.FRAMEBUFFER, haloFramebufferB);
+      gl.framebufferTexture2D(
+        gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, haloTextureB, 0
+      );
+      if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        throw new Error('Halation blur framebuffer is incomplete');
+      }
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      haloWidth = width;
+      haloHeight = height;
+    }
+
+    // The halation source is the linear camera exposure (sRGB decoded, camera
+    // gain applied, two stops of headroom kept). It is blurred separably with
+    // a nine-tap Gaussian whose sigma is the frame-relative physical sigma.
+    function renderHaloChain(target, gain, sigmaPixels) {
+      if (!haloProgram) {
+        throw new Error('The halation shader source is required for the halation effect');
+      }
+      const width = target.haloWidth;
+      const height = target.haloHeight;
+      ensureHaloTargets(width, height);
+      gl.useProgram(haloProgram);
+      gl.uniform1i(haloUniforms.source, 0);
+      gl.uniform3f(haloUniforms.linearGain, gain[0], gain[1], gain[2]);
+      gl.uniform1f(haloUniforms.exposureScale, HALO_EXPOSURE_SCALE);
+      gl.uniform2f(haloUniforms.regionOrigin, target.regionOrigin[0], target.regionOrigin[1]);
+      gl.uniform2f(haloUniforms.regionSize, target.regionSize[0], target.regionSize[1]);
+      gl.uniform2f(
+        haloUniforms.imageFrameOrigin,
+        target.imageFrameOrigin[0], target.imageFrameOrigin[1]
+      );
+      gl.uniform2f(
+        haloUniforms.imageFrameSize,
+        target.imageFrameSize[0], target.imageFrameSize[1]
+      );
+
+      // 1. exposure pass: photo texture -> haloTextureA
+      gl.bindFramebuffer(gl.FRAMEBUFFER, haloFramebufferA);
+      gl.viewport(0, 0, width, height);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, photoTexture);
+      gl.uniform1f(haloUniforms.mode, 0);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      // 2. horizontal blur: haloTextureA -> haloTextureB
+      gl.bindFramebuffer(gl.FRAMEBUFFER, haloFramebufferB);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, haloTextureA);
+      gl.uniform1f(haloUniforms.mode, 1);
+      gl.uniform1f(haloUniforms.blurSigma, sigmaPixels);
+      gl.uniform2f(haloUniforms.sourceSize, width, height);
+      gl.uniform2f(haloUniforms.blurDirection, 1, 0);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      // 3. vertical blur: haloTextureB -> haloTextureA
+      gl.bindFramebuffer(gl.FRAMEBUFFER, haloFramebufferA);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, haloTextureB);
+      gl.uniform1f(haloUniforms.mode, 1);
+      gl.uniform1f(haloUniforms.blurSigma, sigmaPixels);
+      gl.uniform2f(haloUniforms.sourceSize, width, height);
+      gl.uniform2f(haloUniforms.blurDirection, 0, 1);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    function defaultTarget(width, height) {
+      const rect = computeFrameRect(width, height);
+      return {
+        width,
+        height,
+        haloWidth: width,
+        haloHeight: height,
+        regionOrigin: rect.origin,
+        regionSize: rect.size,
+        imageFrameOrigin: rect.origin,
+        imageFrameSize: rect.size,
+        haloUvScale: [1, 1],
+        haloUvOffset: [0, 0],
+        longEdgePx: rect.longEdgePx,
+      };
+    }
+
+    function draw(intensity, adjustmentState, effectState, target) {
       if (destroyed) {
         throw new Error('Renderer has been destroyed');
       }
@@ -256,6 +449,21 @@
         adjustmentState,
         useExtended ? lut.extended.headroomEv : 0
       );
+      const grainStrength = Math.max(0, Number(effectState.grain) || 0);
+      const halationStrength = Math.max(0, Number(effectState.halation) || 0);
+      const vignetteStrength = Math.max(0, Number(effectState.vignette) || 0);
+      const haloEnabled = halationStrength > 0 && !!haloProgram;
+      if (halationStrength > 0 && !haloProgram) {
+        throw new Error('The halation effect needs the halo shader source');
+      }
+
+      if (haloEnabled) {
+        const sigmaPixels = Effects.halationSigmaPixels(
+          stockEffects.halation.sigmaUm, target.longEdgePx
+        );
+        renderHaloChain(target, gain, sigmaPixels);
+      }
+
       gl.useProgram(program);
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, photoTexture);
@@ -263,6 +471,8 @@
       gl.bindTexture(gl.TEXTURE_2D, lutTexture);
       gl.activeTexture(gl.TEXTURE2);
       gl.bindTexture(gl.TEXTURE_2D, extendedLutTexture);
+      gl.activeTexture(gl.TEXTURE3);
+      gl.bindTexture(gl.TEXTURE_2D, haloTextureA);
       gl.uniform1f(uniforms.n, lut ? lut.n : 0);
       gl.uniform1f(uniforms.cols, lut ? lut.cols : 0);
       gl.uniform1f(uniforms.rows, lut ? lut.rows : 0);
@@ -281,13 +491,42 @@
         uniforms.postIdentity,
         adjustmentState.contrast === 0 && adjustmentState.saturation === 1 ? 1 : 0
       );
+      gl.uniform2f(
+        uniforms.imageFrameOrigin,
+        target.imageFrameOrigin[0], target.imageFrameOrigin[1]
+      );
+      gl.uniform2f(uniforms.imageFrameSize, target.imageFrameSize[0], target.imageFrameSize[1]);
+      gl.uniform2f(uniforms.regionOrigin, target.regionOrigin[0], target.regionOrigin[1]);
+      gl.uniform2f(uniforms.regionSize, target.regionSize[0], target.regionSize[1]);
+      gl.uniform1f(uniforms.grainStrength, grainStrength);
+      gl.uniform1f(uniforms.grainGrid, Effects.GRAIN_LATTICE_FRAME);
+      gl.uniform1fv(uniforms.grainCurve, stockEffects.grain.curve);
+      // The grain matrix is the Cholesky factor of the measured mid-tone
+      // grain covariance, stored row-major. WebGL1 wants column-major data
+      // and rejects the transpose flag, so the order is swapped here.
+      const matrix = stockEffects.grain.matrix;
+      gl.uniformMatrix3fv(uniforms.grainMatrix, false, [
+        matrix[0], matrix[3], matrix[6],
+        matrix[1], matrix[4], matrix[7],
+        matrix[2], matrix[5], matrix[8],
+      ]);
+      gl.uniform1f(uniforms.haloEnabled, haloEnabled ? 1 : 0);
+      gl.uniform3f(
+        uniforms.haloStrength,
+        stockEffects.halation.strength[0] * halationStrength,
+        stockEffects.halation.strength[1] * halationStrength,
+        stockEffects.halation.strength[2] * halationStrength
+      );
+      gl.uniform2f(uniforms.haloUvScale, target.haloUvScale[0], target.haloUvScale[1]);
+      gl.uniform2f(uniforms.haloUvOffset, target.haloUvOffset[0], target.haloUvOffset[1]);
+      gl.uniform1f(uniforms.vignetteStrength, vignetteStrength);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
 
     function render(intensity) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, canvas.width, canvas.height);
-      draw(intensity, adjustments);
+      draw(intensity, adjustments, effects, defaultTarget(canvas.width, canvas.height));
     }
 
     function ensureTarget(width, height) {
@@ -338,12 +577,15 @@
       const state = settings.adjustments === undefined
         ? adjustments
         : Adjustments.normalize(settings.adjustments);
+      const effectState = settings.effects === undefined
+        ? effects
+        : Effects.normalize(settings.effects);
       const intensity = settings.intensity === undefined ? 1 : settings.intensity;
       const started = now();
       ensureTarget(width, height);
       gl.bindFramebuffer(gl.FRAMEBUFFER, targetFramebuffer);
       gl.viewport(0, 0, width, height);
-      draw(intensity, state);
+      draw(intensity, state, effectState, defaultTarget(width, height));
       const submitted = now();
       gl.finish();
       const rendered = now();
@@ -396,9 +638,16 @@
       gl.deleteTexture(lutTexture);
       gl.deleteTexture(extendedLutTexture);
       gl.deleteTexture(targetTexture);
+      gl.deleteTexture(haloTextureA);
+      gl.deleteTexture(haloTextureB);
       gl.deleteFramebuffer(targetFramebuffer);
+      gl.deleteFramebuffer(haloFramebufferA);
+      gl.deleteFramebuffer(haloFramebufferB);
       gl.deleteBuffer(buffer);
       gl.deleteProgram(program);
+      if (haloProgram) {
+        gl.deleteProgram(haloProgram);
+      }
     }
 
     return {
@@ -412,6 +661,8 @@
       hasExtendedLut,
       setAdjustments,
       getAdjustments,
+      setEffects,
+      getEffects,
       render,
       renderToPixels,
       clearPhoto,
@@ -422,6 +673,7 @@
 
   return {
     computePreviewSize,
+    computeFrameRect,
     createRenderer,
   };
 }));
