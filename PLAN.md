@@ -105,76 +105,107 @@ channel spread <=3, and no highlight flat-top (outputs strictly increase at inpu
 +1.5-stop linear-light, normally exposed derivative of the portrait (labelled), with original
 plus 11 stock tiles. All Phase-1 size and mean-dE2000 < 2 criteria remain in force.
 
+## Phase 2 — Pick & preview
+
+Native WeChat Mini Program only (no framework, no npm build step for the app itself). ES2015+,
+2-space indent. Main package must stay under 2 MB; LUTs stay in a subpackage.
+
+### Goals
+Replace the Phase-0 placeholder index page with a working photo picker and WebGL canvas preview
+(the actual film look lands in Phase 3; Phase 2 must already put the chosen photo on a WebGL canvas
+so Phase 3 only adds the LUT shader).
+
+### UI / UX
+- Full-screen dark UI consistent with `app.json` window colours.
+- Primary actions: "从相册选择" and "拍照" (or one button that opens `wx.chooseMedia` with both).
+- After pick: show the photo filling the preview area (contain, letterbox if needed), a loading
+  indicator while decoding/resizing, and a clear error toast/banner on failure (permission denied,
+  cancel, decode failure, unsupported type).
+- Empty state: short attribution line "Film modeling powered by spektrafilm".
+
+### Behaviour
+1. `wx.chooseMedia({ count:1, mediaType:['image'], sourceType:['album','camera'], sizeType:['compressed','original'] })`.
+2. Read the temp file; decode with `wx.getImageInfo` (and/or canvas Image) to get width/height/orientation.
+3. Handle EXIF orientation so the preview is upright. Prefer `wx.getImageInfo` orientation / drawing
+   with the correct transform; document the approach and any WeChat quirks in `docs/ORIENTATION.md`.
+4. Downscale for preview: long edge target **1280 CSS px**, capped by `Math.min(devicePixelRatio*longEdge, maxTextureSize, 2048)`.
+   Keep aspect ratio. Prefer `wx.canvasToTempFilePath` / offscreen 2d canvas or `createImage` + drawImage
+   for the resize; do **not** keep a multi-megapixel texture in GPU memory for preview.
+5. Draw the (oriented, downscaled) RGB image as a WebGL texture onto `<canvas type="webgl">` with a
+   passthrough fragment shader (Phase 2). Keep a clearly marked stub for the Phase-3 LUT shader so the
+   swap is a one-line change of the fragment source / program.
+6. Plan (do not implement yet) a Canvas 2D fallback path: leave a `renderer/fallback2d.js` stub that
+   throws "not implemented" and is selected only if WebGL context creation fails; document it.
+
+### Acceptance (Phase 2)
+- Choosing a photo (album or camera) shows it upright on the WebGL canvas within ~1 s on a mid phone
+  for a typical 12 MP JPEG (document how this was estimated; the headless harness must at least prove
+  the downscale+draw path works on the box).
+- Cancel / permission deny produces a user-visible message, no crash.
+- Main package size (excluding `subpackages/`) < 2 MB; report `du` numbers.
+- All JSON still parse; page files exist for every `app.json` / subpackage page entry.
+
+## Phase 3 — WebGL LUT renderer + verification harness
+
+### Mini Program renderer
+1. **Subpackage**: register `subpackages/luts` in `app.json` (`root: "subpackages/luts"`, name `"luts"`,
+   no pages needed — asset-only subpackage is fine; if WeChat requires a page, add a no-op
+   `pages/empty`). Load LUTs lazily via `wx.loadSubpackage({ name: 'luts' })` before first use; show
+   a loading state while the package downloads.
+2. **Shared GLSL + JS core** under `shaders/` and `utils/` that both the Mini Program and the
+   headless harness import (or copy — prefer a single source of truth: put the GLSL strings in
+   `shaders/lut.vert.glsl` / `shaders/lut.frag.glsl` and a thin loader; the harness reads the same
+   files). Do **not** duplicate the math.
+3. **WebGL1 / GLSL ES 1.0** only (WeChat baseline). Vertex: full-screen quad. Fragment:
+   - Sample the photo texture (LINEAR, clamp).
+   - Compute cube coords `q = color * (N-1)`, `q0=floor(q)`, `q1=min(q0+1,N-1)`, `f=q-q0` for RGB.
+   - For blue slices `b0` and `b1`, compute tile positions with `cols=8` as in `docs/LUT_FORMAT.md`
+     and sample each slice with **hardware bilinear** (texture filter LINEAR) at half-texel centres
+     for red/green. Mix the two samples by `fb`. Never let a bilinear footprint cross a tile boundary
+     into another blue slice (address red within the tile; clamp u to the slice's interior).
+   - LUT texture: upload the PNG as RGB888, **LINEAR** min/mag, CLAMP_TO_EDGE, no mipmaps.
+   - Uniforms: `uImage`, `uLut`, `uN`, `uCols`, `uRows`, `uIntensity` (0..1; `mix(original, graded, intensity)`).
+   - Output is encoded sRGB already (shaper domain = encoded sRGB). No extra gamma.
+4. **UI**: simple horizontal/vertical stock list from `subpackages/luts/luts.json` (name + category);
+   selecting a stock loads its PNG into the LUT texture (cache previously loaded ones in memory).
+   Intensity slider (default 1.0). Press-and-hold on the preview shows the original (intensity→0 while
+   held; restore on release). Reset / clear photo control.
+5. Match `tools/lut_apply.py` exactly at intensity=1.0.
+
+### Headless verification harness (required; WeChat DevTools is unavailable)
+Under `harness/` (Node, not shipped in the Mini Program package):
+1. Use Puppeteer against the box's Google Chrome with `--use-gl=swiftshader` (or ANGLE/SwiftShader)
+   so WebGL1 works headlessly. Install deps into `harness/package.json` (gitignored `node_modules`).
+2. A page that loads the **same** `shaders/lut.*.glsl` + a JS port of the Mini Program's texture
+   upload / draw path, renders each of the 6 phone photos in `/workspace/testphotos/*.jpg` (downscaled
+   the same way as the app, long edge 1280) through all 11 stocks at intensity 1.0, and writes:
+   - `harness/out/<stock>/<photo>-shader.png`
+   - `harness/out/<stock>/<photo>-python.png` (from `tools/lut_apply.py`)
+   - `harness/out/<stock>/<photo>-diff.png` (amplified abs diff)
+   - `harness/out/report.json` and `harness/out/report.md` with per-pair mean/p95/max ΔE2000 and
+     mean abs 8-bit error, plus median shader render time in ms.
+3. Acceptance: for every stock × photo, **mean ΔE2000 < 0.3** and **max ΔE2000 < 2.0** vs the Python
+   LUT apply on the same downscaled input. Fail the harness with nonzero exit if any pair fails.
+4. Also produce `harness/out/contact-shader.jpg`: a contact sheet of original | shader for a few
+   stocks on one photo (for the human report).
+5. Document how to re-run: `cd harness && npm i && npm test`.
+
+### Static checks (no AppID)
+- Script `tools/check_miniprogram.py` (or `harness/check_static.mjs`): every `app.json` /
+  `project.config.json` / page / subpackage JSON parses; every page listed has js/json/wxml/wxss;
+  no `require` of Node builtins in app code; main package file-size sum < 2 MB; subpackage luts
+  size reported. Note that `miniprogram-ci` needs an AppID/private key — skip and document.
+
+### Acceptance (Phase 3)
+- Harness report all-green against the thresholds above.
+- Main package < 2 MB; LUT subpackage size reported.
+- Intensity slider and press-and-hold compare work (unit-test the mix math in the harness at
+  intensity 0 and 0.5 as well: intensity 0 == original within 1 code; 0.5 ≈ midpoint).
+- `docs/RENDERER.md` explains the shader, uniforms, half-texel rule, and how it mirrors
+  `lut_apply.py`.
+- `docs/LIMITATIONS.md` updated: DevTools/real-device unverified; Canvas2D fallback stub only;
+  grain/halation etc. still later.
+
 ## Later phases
-2 pick & preview; 3 WebGL LUT renderer; 4 presets UI; 5 effects & export; 6 release.
-(Server mode dropped: route A only.)
-
-## Phase 1c — Physically faithful bake (SUPERSEDES Phase 1b)
-
-**Rule: the LUT must equal spektrafilm's real pipeline.** No ad-hoc per-channel post-simulation
-tone/levels/curve step of our own. `tools/calibrate_tones.py`'s tone-curve table and
-`apply_tone_curve` are to be REMOVED (delete the `tone_curve` data from tools/stocks.json too).
-Brightness/tonality are fixed only via spektrafilm's own parameters, and every setting is applied
-identically in (a) the LUT bake and (b) the reference full `simulate()` run used for validation.
-
-Parameters to study and choose (document the reasoning + measurements in `docs/EXPOSURE.md`):
-- Input: phone sRGB JPEG -> input colour space "sRGB" with CCTF decoding (linear), as filmroom
-  (/workspace/filmroom, Rust port: app/src/main/java/dev/filmroom/model/EditorState.kt and
-  native/crates/film-engine/src/mobile.rs `MobileParams::default()/runtime()`) and the spektrafilm GUI
-  (src/spektrafilm_gui/param_manifest.py / state.py defaults) do. Use the LUT creator's
-  `stops_above_gray` / `input_exposure_gain` mechanism (src/spektrafilm_lut_creator/builders.py) and the
-  runtime's `camera.exposure_compensation_ev`, and understand `camera.auto_exposure` (center-weighted
-  mean Y/0.184: image dependent, so cannot be in a LUT — instead derive the fixed gain that auto-exposure
-  would choose on typical normally exposed phone photos: measure measure_autoexposure_ev over the
-  test photos and use the median as the fixed exposure compensation, and compare with upstream LUT-creator
-  default "+4 stops" convention).
-- Print: `enlarger.print_exposure` (2**EV), `print_exposure_compensation`, `normalize_print_exposure`,
-  `neutral_print_filters_from_database`, y/m filter neutral values, `illuminant`.
-- Scanner: `scanner.white_correction/black_correction`, `white_level` (default 0.98), `black_level`
-  (default 0.01) — the physical scan normalisation that maps paper white / paper black. Evaluate whether
-  enabling them is how the GUI/filmroom get a usable white point (check filmroom's defaults + docs, and
-  the spektrafilm GUI defaults); positive stocks use `io.scan_film=True`.
-- Also check `runtime`'s gamut compression / `output_gamut` handling and use the same in both paths.
-Method: write `tools/explore_exposure.py` that, for each stock, sweeps candidate settings on a neutral
-sRGB ramp (and the natural test photos) with the real `simulate()`, and reports: ramp (codes
-0,20,45,60,80,118,170,200,230,255 -> output), channel spread, white reach, mean luminance preservation on
-the photos. Pick ONE principled global recipe (same parameter choices for all stocks, only per-stock
-what spektrafilm itself defines per stock, e.g. database neutral filters, scan_film for slides) — not a
-per-stock fit to targets. Soft goals (report, don't force via hacks): normal photos look normally exposed;
-white reaches ≥ ~240 if achieved by scanner/print normalisation; neutrals stay neutral. If a stock
-legitimately is dark/punchy (e.g. Ektar), accept and report it.
-
-Test photos (normally exposed natural images, 1600x1067 JPEG, on the box only, do NOT commit them):
-/workspace/testphotos/p1015.jpg (landscape/sky), p1025.jpg (forest/pug), p1043.jpg (Yosemite),
-p1062.jpg (indoors/high-key), p237.jpg (black dog, wood), p433.jpg (bear). Downscale to <= 1.2 MP for
-simulate to save RAM (machine has ~3 GB free; run sequentially, thread limits as in run_all.sh).
-Keep the ProPhoto portrait + IT8 chart + synthetic image too, as additional validation images.
-
-LUT resolution & layout: try N = 33, 49, 65 (and report error vs size). Because N*N could exceed
-mini-program/GPU max texture width, change the strip layout to a TILED GRID: the N blue slices (each N x N,
-x=red, y=green) arranged row-major in a grid with `cols = 8` (rows = ceil(N/8)); store `cols`, `rows`, `size`
-in luts.json; max PNG side must be <= 2048. Update tools/lut_apply.py (numpy trilinear that mirrors the
-shader: two bilinear fetches blended along blue, half-texel centres) and docs/LUT_FORMAT.md. Pick the
-smallest N whose validation error is not materially worse than 65 (e.g. p95 dE2000 within ~0.1 of N=65),
-with total subpackages/luts < 1.5 MB (8-bit PNG; consider whether 8-bit quantisation is a significant part
-of the error and report it).
-
-Edge handling: input is display-referred sRGB 0..1 so the encoded (gamma) domain is the shaper; verify
-the corners/edges: report % of cube nodes whose physical output is outside [0,1] before clipping and how
-the full pipeline handles them (gamut compression / clip) — use the same in the reference. Highlight
-region: ensure near-white input (250..255) is monotonic and not flat-topped by the LUT stage itself.
-
-Validation (validate_luts.py -> docs/validation.md/json): for each stock x image: mean, p95, p99 and MAX
-dE2000 (LUT vs full simulate with identical settings, grain/halation/diffusion/stochastic effects OFF);
-subset stats: shadows (reference L* < 20), highlights (L* > 85), saturated colours (chroma C*ab > 50);
-plus the neutral ramp table and 8-bit quantisation-only error. Fail loudly (nonzero exit) if natural-image
-mean dE2000 >= 1.0 or p95 >= 3.0 for any stock (adjust N if needed).
-
-Contact sheet `docs/lut-preview.jpg` (< 800 KB): (1) a grid for at least 3 stocks (Portra 400, Ektar 100,
-Velvia 100 or similar) x 2 natural photos where each row/triplet shows ORIGINAL | FULL PHYSICAL PIPELINE
-(simulate) | LUT, labelled, so a human can compare; (2) a second image `docs/lut-all-stocks.jpg` with original + all
-stocks (LUT) on one normally exposed natural photo. Also write per-pair absolute-difference stats under each triplet.
-
-Excluded from the LUT (document in README + docs/LIMITATIONS.md): grain, halation/scatter, diffusion
-filters, lens/scan blur, glare, DIR-coupler spatial diffusion, any other spatial/stochastic effects;
-these are to be re-created later as WebGL shaders (grain, halation bloom, vignette-like diffusion).
+4 presets UI polish; 5 effects (grain/halation shaders) & export (`wx.canvasToTempFilePath` +
+`wx.saveImageToPhotosAlbum`); 6 release (privacy policy, review). Server mode remains dropped.
