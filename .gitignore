@@ -5,3 +5,5 @@ __pycache__/
 build/
 node_modules/
 project.private.config.json
+harness/out/
+harness/node_modules/
