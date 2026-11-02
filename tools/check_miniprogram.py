@@ -30,6 +30,8 @@ WXML_EXPRESSION_PATTERN = re.compile(r"\{\{([^{}]*)\}\}", re.S)
 WXML_FOR_PATTERN = re.compile(r"wx:for\s*=\s*\"\{\{[^}]*\}\"")
 WXML_FOR_ITEM_PATTERN = re.compile(r"wx:for-item\s*=\s*\"([^\"]+)\"")
 WXML_FOR_INDEX_PATTERN = re.compile(r"wx:for-index\s*=\s*\"([^\"]+)\"")
+WXML_ID_PATTERN = re.compile(r"\bid\s*=\s*\"([^\"]+)\"")
+WXML_FOR_TAG_PATTERN = re.compile(r"<[^<>]*wx:for\s*=\s*\"[^\"]*\"[^<>]*>")
 IDENTIFIER_PATTERN = re.compile(r"(?<![.\w$])([A-Za-z_$][\w$]*)")
 STRING_LITERAL_PATTERN = re.compile(r"'[^']*'|\"[^\"]*\"")
 EXPRESSION_KEYWORDS = {"true", "false", "null", "undefined", "item", "index"}
@@ -208,6 +210,34 @@ def check_wxml_identifiers(text: str, label: str, data_keys: set[str],
         )
 
 
+def check_wxml_ids(text: str, label: str, errors: list[str]) -> None:
+    """Element ids must be unique inside one file (the thumbnail observer uses them)."""
+    seen: set[str] = set()
+    for match in WXML_ID_PATTERN.finditer(text):
+        value = match.group(1)
+        if value in seen:
+            errors.append(f"{label}: duplicate element id '{value}'")
+        seen.add(value)
+
+
+def check_wxml_for_keys(text: str, label: str) -> None:
+    for match in WXML_FOR_TAG_PATTERN.finditer(text):
+        if "wx:key" not in match.group(0):
+            WARNINGS.append(f"{label}: wx:for without wx:key can reuse DOM nodes")
+
+
+def check_relative_requires(path: Path, errors: list[str]) -> None:
+    """Every relative require must resolve to a file that exists."""
+    for imported in REQUIRE_PATTERN.findall(path.read_text(encoding="utf-8")):
+        if not imported.startswith("."):
+            continue
+        target = (path.parent / imported).resolve()
+        if not target.is_file():
+            errors.append(
+                f"{path.relative_to(ROOT)}: require target '{imported}' does not exist"
+            )
+
+
 def check_wxss(path: Path, errors: list[str]) -> None:
     text = path.read_text(encoding="utf-8")
     for match in re.finditer(r"@import\s+([\"'])([^\"']+)\1", text):
@@ -261,6 +291,8 @@ def main() -> int:
             wxml = wxml_path.read_text(encoding="utf-8")
             label = wxml_path.relative_to(ROOT)
             check_wxml_tags(wxml, str(label), errors)
+            check_wxml_ids(wxml, str(label), errors)
+            check_wxml_for_keys(wxml, str(label))
             if script_path.is_file():
                 check_wxml_handlers(wxml, str(label), defined_handlers(script_path), errors)
                 check_wxml_identifiers(wxml, str(label), page_data_keys(script_path), errors)
@@ -279,6 +311,7 @@ def main() -> int:
             normalized = imported.removeprefix("node:").split("/")[0]
             if imported.startswith("node:") or normalized in NODE_BUILTINS:
                 errors.append(f"Node builtin require '{imported}' in {path.relative_to(ROOT)}")
+        check_relative_requires(path, errors)
 
     if not SHADER_DESTINATION.exists() or SHADER_DESTINATION.read_text(encoding="utf-8") != generate_shaders():
         errors.append("utils/shaders.js is stale; run python3 tools/embed_shaders.py")

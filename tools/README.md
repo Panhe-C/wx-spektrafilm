@@ -166,3 +166,17 @@ bytes (290.1 KiB)**; exact pooled natural-image mean/p95/p99/MAX are **0.2829/0.
 1.6896 dE2000**. Ektar has one explicitly reported sub-one-code 8-bit highlight plateau; no
 physical response was altered to remove it. Excluded spatial/stochastic effects and other
 boundaries are documented in `docs/LIMITATIONS.md` and the root `README.md`.
+
+## Static Mini Program checks
+
+`python3 tools/check_miniprogram.py` needs no AppID and no network. It verifies that every JSON
+file parses, that every page in `app.json` (including subpackage pages) has its four files, that
+the WXML of each page has balanced tags, that every `bind*`/`catch*` handler exists on the page,
+that every `{{…}}` identifier resolves to page data or a `wx:for` alias, that element ids are
+unique inside a file, that `wx:for` lists declare a `wx:key` (warning), that no runtime file
+requires a Node builtin, that every relative `require` resolves to an existing file, that the
+embedded GLSL matches `shaders/*.glsl`, and that the main package stays below 2 MB and the LUT
+subpackage below 1,200,000 bytes. It also validates the PNG geometry and byte counts of every
+delivered LUT against `luts.json`.
+
+`miniprogram-ci` is intentionally skipped: it needs a real AppID and a private key.

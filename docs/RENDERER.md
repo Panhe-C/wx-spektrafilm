@@ -132,7 +132,23 @@ cached RGBA framebuffer, reads it back with `readPixels`, and returns top-down `
 together with `{ submitMs, renderMs, readPixelsMs, totalMs }`. The preview framebuffer and
 viewport are restored afterwards, and a temporary `adjustments` object lets thumbnails be rendered
 at default settings while the live preview keeps its own state. This is the path the Phase-4b
-preset cards use.
+preset cards use; `docs/UI.md` describes the full thumbnail pipeline, including the WeChat export
+order and the placeholder fallback.
+
+## Base and extended cubes
+
+The two cubes of a stock are independent uploads:
+
+- `setLut(source, metadata, extendedSource)` uploads the base cube and, when the extended source
+  is supplied, the extended cube as well. The extended source is **optional**: the Mini Program
+  page fetches `<id>.ev2.png` only when a positive EV or a nonidentity white balance needs it.
+- `setExtendedLut(source, metadata)` uploads the extended cube later without re-uploading the base
+  cube.
+- `hasExtendedLut()` reports whether the extended cube is currently resident.
+- Drawing with `ev > 0` or a nonidentity white balance while the extended cube is missing throws
+  `This stock has no extended-range LUT for positive EV/WB` rather than silently using the native
+  cube. The harness contract check exercises exactly this sequence: select without the extended
+  cube, expect the clear failure, upload it, and expect the draw to succeed.
 
 ## Headless verification
 
@@ -177,8 +193,8 @@ The final on-box full run passed **66/66 default pairs**, **11/11 intensity chec
 adjustment pairs**, and **11/11 thumbnails**. The worst default mean ΔE2000 was **0.0005203500**
 (`velvia100/p237`) and the worst default maximum was **1.2104642391** (`portra160/p1015`); the worst
 adjustment mean was **0.0004473071** and the worst adjustment maximum **1.2241792679**. Median
-render/readback time was **19.65 ms**, median thumbnail `setLut`+render+readback **1.80 ms**, and
-median full-preview stock switch **15.10 ms**. Intensity 0 was code-exact; intensity 0.5 stayed
+render/readback time was **18.55 ms**, median thumbnail `setLut`+render+readback **1.20 ms**, and
+median full-preview stock switch **18.20 ms**. Intensity 0 was code-exact; intensity 0.5 stayed
 within one code. See `harness/out/report.md` for the full per-stock and per-pair tables.
 
 ## Performance expectation and fallback boundary

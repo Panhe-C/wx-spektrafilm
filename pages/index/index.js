@@ -1,6 +1,12 @@
 const shaders = require('../../utils/shaders.js');
 const { createRenderer } = require('../../utils/lut-renderer.js');
 const { loadCanvasImage, preparePhoto } = require('../../utils/photo.js');
+const Adjustments = require('../../utils/adjust.js');
+const ui = require('../../utils/ui-state.js');
+const thumbnails = require('../../utils/thumbnail.js');
+const appInfo = require('../../utils/app-info.js');
+
+const DEFAULT_ADJUSTMENTS = ui.ADJUSTMENT_DEFAULTS;
 
 Page({
   data: {
@@ -9,12 +15,35 @@ Page({
     busy: false,
     busyText: '',
     error: '',
-    stocks: [],
+    phase: ui.PHASES.EMPTY,
+    categories: [],
     selectedStock: '',
-    intensity: 1,
-    intensityText: '100%',
+    selectedStockName: '',
+    adjustOpen: true,
+    postOpen: false,
+    aboutOpen: false,
     comparing: false,
+    extendedLoading: false,
     canvasStyle: 'width: 1px; height: 1px;',
+    adjustments: {
+      ev: 0,
+      temperature: 0,
+      tint: 0,
+      intensity: 1,
+      contrast: 0,
+      saturation: 1,
+    },
+    readouts: {
+      ev: '0.0 EV',
+      temperature: '0',
+      tint: '0',
+      intensity: '100%',
+      contrast: '0.00',
+      saturation: '100%',
+    },
+    resetEnabled: false,
+    version: appInfo.version,
+    sourceUrl: appInfo.sourceUrl,
   },
 
   onLoad() {
@@ -25,6 +54,19 @@ Page({
     this.operationId = 0;
     this.stockRequestId = 0;
     this.photoSize = null;
+    this.photoId = 0;
+    this.adjustments = Object.assign({}, DEFAULT_ADJUSTMENTS);
+    this.comparing = false;
+    this.activeStock = null;
+    this.thumbs = Object.create(null);
+    this.thumbQueue = [];
+    this.thumbRunning = false;
+    this.thumbTimer = null;
+    this.readoutTimer = null;
+    this.lastReadoutAt = 0;
+    this.extendedPromise = null;
+    this.observer = null;
+    this.visibleStockIds = Object.create(null);
     try {
       const system = wx.getSystemInfoSync();
       this.devicePixelRatio = system.pixelRatio || 1;
@@ -46,6 +88,15 @@ Page({
   onUnload() {
     this.operationId += 1;
     this.stockRequestId += 1;
+    this.clearTimers();
+    if (this.observer && this.observer.disconnect) {
+      try {
+        this.observer.disconnect();
+      } catch (error) {
+        // The observer is already gone; nothing to clean up.
+      }
+      this.observer = null;
+    }
     if (this.renderer) {
       this.renderer.destroy();
       this.renderer = null;
@@ -60,6 +111,17 @@ Page({
       }
     });
     this.lutCache = Object.create(null);
+  },
+
+  clearTimers() {
+    if (this.thumbTimer) {
+      clearTimeout(this.thumbTimer);
+      this.thumbTimer = null;
+    }
+    if (this.readoutTimer) {
+      clearTimeout(this.readoutTimer);
+      this.readoutTimer = null;
+    }
   },
 
   initialiseRenderer() {
@@ -91,6 +153,24 @@ Page({
         }
       });
   },
+
+  // --- phase machine -------------------------------------------------------
+
+  transition(event) {
+    let phase = this.data.phase;
+    try {
+      phase = ui.nextPhase(phase, event);
+    } catch (error) {
+      phase = this.data.phase;
+    }
+    this.setData({
+      phase,
+      busy: ui.isBusyPhase(phase),
+      busyText: ui.phaseText(phase),
+    });
+  },
+
+  // --- photo picking -------------------------------------------------------
 
   chooseMedia(sourceType) {
     return new Promise((resolve, reject) => {
@@ -126,6 +206,10 @@ Page({
       }
       await this.loadPhoto(file.tempFilePath);
     } catch (error) {
+      if (/cancel/i.test(String((error && (error.errMsg || error.message)) || ''))) {
+        this.setData({ error: '已取消选择。' });
+        return;
+      }
       this.showError(this.describeError(error));
     }
   },
@@ -133,12 +217,9 @@ Page({
   async loadPhoto(src) {
     const operation = ++this.operationId;
     this.stockRequestId += 1;
-    this.setData({
-      busy: true,
-      busyText: '正在解码、校正方向并缩放…',
-      error: '',
-      comparing: false,
-    });
+    this.transition('pick');
+    this.setData({ error: '', comparing: false });
+    this.comparing = false;
     try {
       const prepared = await preparePhoto({
         canvas: this.canvas,
@@ -151,10 +232,7 @@ Page({
       }
       this.photoSize = { width: prepared.width, height: prepared.height };
       await new Promise((resolve) => {
-        this.setData({
-          hasPhoto: true,
-          busyText: '正在加载胶片 LUT…',
-        }, resolve);
+        this.setData({ hasPhoto: true }, resolve);
       });
       if (operation !== this.operationId) {
         return;
@@ -167,15 +245,28 @@ Page({
       this.renderer.setPhoto(prepared.canvas);
       this.renderer.render(0);
 
+      this.transition('decoded');
       const stocks = await this.ensureLuts();
       if (operation !== this.operationId) {
         return;
       }
-      this.setData({ stocks });
       if (!stocks.length) {
         throw new Error('LUT manifest is empty');
       }
+      this.photoId += 1;
+      this.resetThumbnails();
+      this.setData({ categories: ui.groupStocks(stocks) });
       await this.activateStock(stocks[0].id, operation);
+      if (operation !== this.operationId) {
+        return;
+      }
+      this.transition('luts-ready');
+      this.startThumbnails();
+    } catch (error) {
+      if (operation === this.operationId) {
+        this.transition('failed');
+        this.showError(this.describeError(error));
+      }
     } finally {
       if (operation === this.operationId) {
         this.setData({ busy: false, busyText: '' });
@@ -207,21 +298,35 @@ Page({
     });
   },
 
-  async getLutImage(stock) {
-    if (this.lutCache[stock.id]) {
-      return this.lutCache[stock.id];
+  /**
+   * Load and cache the LUT images of one stock. The base cube is always
+   * needed; the extended (two-stop headroom) cube is only fetched when the
+   * current adjustments actually require it, and it is cached afterwards.
+   */
+  async getLutImage(stock, options) {
+    const needExtended = !!(options && options.needExtended);
+    let entry = this.lutCache[stock.id];
+    if (!entry) {
+      const base = await loadCanvasImage(this.canvas, `/subpackages/luts/${stock.file}`);
+      entry = { base, extended: null, extendedPromise: null };
+      this.lutCache[stock.id] = entry;
     }
-    // Phase 4a ships an extended-range cube per stock for positive EV and
-    // white balance; both variants are needed before the first render.
-    const base = await loadCanvasImage(this.canvas, `/subpackages/luts/${stock.file}`);
-    let extended = null;
-    if (stock.extended && stock.extended.file) {
-      extended = await loadCanvasImage(
-        this.canvas, `/subpackages/luts/${stock.extended.file}`
-      );
+    if (needExtended && stock.extended && !entry.extended) {
+      if (!entry.extendedPromise) {
+        entry.extendedPromise = loadCanvasImage(
+          this.canvas, `/subpackages/luts/${stock.extended.file}`
+        ).then((image) => {
+          entry.extended = image;
+          entry.extendedPromise = null;
+          return image;
+        }).catch((error) => {
+          entry.extendedPromise = null;
+          throw error;
+        });
+      }
+      await entry.extendedPromise;
     }
-    this.lutCache[stock.id] = { base, extended };
-    return this.lutCache[stock.id];
+    return entry;
   },
 
   async activateStock(id, operation) {
@@ -231,18 +336,15 @@ Page({
     if (!stock) {
       throw new Error(`Unknown stock: ${id}`);
     }
-    this.setData({
-      selectedStock: id,
-      busy: true,
-      busyText: `正在载入 ${stock.name}…`,
-      error: '',
-    });
-    const images = await this.getLutImage(stock);
+    const needExtended = ui.needsExtendedLut(this.adjustments);
+    const images = await this.getLutImage(stock, { needExtended });
     if (operation !== this.operationId || request !== this.stockRequestId) {
       return;
     }
     this.renderer.setLut(images.base, stock, images.extended);
-    this.renderer.render(this.data.comparing ? 0 : this.data.intensity);
+    this.activeStock = stock;
+    this.setData({ selectedStock: stock.id, selectedStockName: stock.name });
+    this.renderPreview();
   },
 
   async onStockTap(event) {
@@ -256,70 +358,374 @@ Page({
       if (operation === this.operationId) {
         this.showError('胶片 LUT 加载失败，请检查网络后重试。');
       }
-    } finally {
-      if (operation === this.operationId) {
-        this.setData({ busy: false, busyText: '' });
-      }
     }
   },
 
-  setIntensity(value) {
-    const intensity = Math.max(0, Math.min(1, Number(value)));
-    this.setData({
-      intensity,
-      intensityText: `${Math.round(intensity * 100)}%`,
-    });
-    if (this.data.hasPhoto) {
-      this.renderer.render(this.data.comparing ? 0 : intensity);
-    }
+  // --- adjustments ---------------------------------------------------------
+
+  onAdjustChanging(event) {
+    this.applyAdjustment(event.currentTarget.dataset.key, event.detail.value, false);
   },
 
-  onIntensityChanging(event) {
-    this.setIntensity(event.detail.value);
+  onAdjustChange(event) {
+    this.applyAdjustment(event.currentTarget.dataset.key, event.detail.value, true);
   },
 
-  onIntensityChange(event) {
-    this.setIntensity(event.detail.value);
-  },
-
-  onPreviewTouchStart() {
-    if (!this.data.hasPhoto) {
+  applyAdjustment(key, rawValue, commit) {
+    let next = null;
+    try {
+      next = ui.applyAdjustment(this.adjustments, key, rawValue);
+    } catch (error) {
       return;
     }
+    this.adjustments = next;
+    if (this.renderer) {
+      this.renderer.setAdjustments(next);
+    }
+    this.renderPreview();
+    if (commit) {
+      this.setData({ adjustments: Object.assign({}, next) });
+      this.flushReadouts();
+    } else {
+      this.scheduleReadouts();
+    }
+  },
+
+  onResetAdjustments() {
+    this.adjustments = ui.resetAdjustments();
+    if (this.renderer) {
+      this.renderer.setAdjustments(this.adjustments);
+    }
+    this.renderPreview();
+    this.setData({ adjustments: Object.assign({}, this.adjustments) });
+    this.flushReadouts();
+  },
+
+  scheduleReadouts() {
+    const now = Date.now();
+    if (ui.shouldEmit(now, this.lastReadoutAt, ui.READOUT_INTERVAL_MS)) {
+      this.flushReadouts();
+      return;
+    }
+    if (this.readoutTimer) {
+      return;
+    }
+    const delay = Math.max(16, ui.READOUT_INTERVAL_MS - (now - this.lastReadoutAt));
+    this.readoutTimer = setTimeout(() => {
+      this.readoutTimer = null;
+      this.flushReadouts();
+    }, delay);
+  },
+
+  flushReadouts() {
+    this.lastReadoutAt = Date.now();
+    this.setData({
+      readouts: ui.readouts(this.adjustments),
+      resetEnabled: !ui.isDefaultState(this.adjustments),
+    });
+  },
+
+  renderPreview() {
+    if (!this.renderer || !this.data.hasPhoto) {
+      return;
+    }
+    const intensity = this.comparing ? 0 : this.adjustments.intensity;
+    if (ui.needsExtendedLut(this.adjustments) &&
+      this.activeStock && this.activeStock.extended &&
+      !this.renderer.hasExtendedLut()) {
+      // The extended cube is still being fetched; the preview is redrawn as
+      // soon as it is resident.
+      this.ensureActiveExtended();
+      return;
+    }
+    try {
+      this.renderer.render(intensity);
+    } catch (error) {
+      this.showError(error.message);
+    }
+  },
+
+  ensureActiveExtended() {
+    if (this.extendedPromise) {
+      return this.extendedPromise;
+    }
+    const stock = this.activeStock;
+    if (!stock || !stock.extended) {
+      return Promise.resolve(null);
+    }
+    this.setData({ extendedLoading: true });
+    this.extendedPromise = this.getLutImage(stock, { needExtended: true })
+      .then((images) => {
+        if (this.activeStock === stock && images.extended) {
+          this.renderer.setExtendedLut(images.extended, stock.extended);
+        }
+        return images;
+      })
+      .catch((error) => {
+        this.showError('扩展 LUT 加载失败，请重试。');
+        return null;
+      })
+      .then((images) => {
+        this.extendedPromise = null;
+        this.setData({ extendedLoading: false });
+        if (images && images.extended) {
+          this.renderPreview();
+        }
+        return images;
+      });
+    return this.extendedPromise;
+  },
+
+  // --- press and hold compare ---------------------------------------------
+
+  onPreviewTouchStart() {
+    if (!this.data.hasPhoto || !this.renderer) {
+      return;
+    }
+    this.comparing = true;
     this.setData({ comparing: true });
-    this.renderer.render(0);
+    if (this.renderer) {
+      this.renderer.render(0);
+    }
   },
 
   onPreviewTouchEnd() {
-    if (!this.data.comparing) {
+    if (!this.comparing) {
       return;
     }
+    this.comparing = false;
     this.setData({ comparing: false });
-    this.renderer.render(this.data.intensity);
+    if (this.renderer) {
+      this.renderer.render(this.adjustments.intensity);
+    }
   },
 
   onPreviewTouchCancel() {
     this.onPreviewTouchEnd();
   },
 
+  // --- preset thumbnails ---------------------------------------------------
+
+  resetThumbnails() {
+    this.thumbQueue = [];
+    this.thumbRunning = false;
+    this.thumbs = Object.create(null);
+    this.visibleStockIds = Object.create(null);
+    if (this.thumbTimer) {
+      clearTimeout(this.thumbTimer);
+      this.thumbTimer = null;
+    }
+    if (this.observer && this.observer.disconnect) {
+      try {
+        this.observer.disconnect();
+      } catch (error) {
+        // Nothing to clean up.
+      }
+      this.observer = null;
+    }
+  },
+
+  startThumbnails() {
+    if (!this.lutManifest || !this.photoSize || !this.renderer) {
+      return;
+    }
+    const ids = this.lutManifest.map((stock) => stock.id);
+    const visible = Object.keys(this.visibleStockIds);
+    const order = ui.thumbnailOrder(ids, this.data.selectedStock, visible);
+    this.thumbQueue = order
+      .filter((id) => !this.thumbs[id])
+      .map((id) => ({ id }));
+    this.pumpThumbnails();
+    this.observeThumbnails();
+  },
+
+  pumpThumbnails() {
+    if (this.thumbRunning || !this.thumbQueue.length) {
+      return;
+    }
+    const item = this.thumbQueue.shift();
+    this.thumbRunning = true;
+    const operation = this.operationId;
+    this.generateThumbnail(item.id, operation)
+      .catch(() => null)
+      .then(() => {
+        this.thumbRunning = false;
+        if (operation !== this.operationId) {
+          return;
+        }
+        if (this.thumbQueue.length) {
+          this.thumbTimer = setTimeout(() => {
+            this.thumbTimer = null;
+            this.pumpThumbnails();
+          }, 32);
+        }
+      });
+  },
+
+  async generateThumbnail(stockId, operation) {
+    const stock = this.lutManifest.find((item) => item.id === stockId);
+    if (!stock || !this.photoSize || !this.renderer) {
+      return;
+    }
+    // Only the base cube is needed: thumbnails are rendered with the default
+    // (identity) adjustments.
+    const images = await this.getLutImage(stock);
+    if (operation !== this.operationId) {
+      return;
+    }
+    const size = ui.thumbnailSize(this.photoSize.width, this.photoSize.height);
+    this.renderer.setLut(images.base, stock, images.extended);
+    const result = this.renderer.renderToPixels({
+      width: size.width,
+      height: size.height,
+      intensity: 1,
+      adjustments: Adjustments.DEFAULTS,
+    });
+    await this.restoreActiveLut(operation);
+    if (operation !== this.operationId) {
+      return;
+    }
+    const exported = await thumbnails.exportPixels({
+      pixels: result.pixels,
+      width: size.width,
+      height: size.height,
+      fileName: `thumb-${stockId}`,
+    });
+    if (operation !== this.operationId) {
+      return;
+    }
+    this.setThumbnail(stockId, exported ? exported.src : '');
+  },
+
+  async restoreActiveLut(operation) {
+    const stock = this.activeStock;
+    if (!stock || !this.renderer) {
+      return;
+    }
+    const images = await this.getLutImage(stock, {
+      needExtended: ui.needsExtendedLut(this.adjustments),
+    });
+    if (operation !== this.operationId) {
+      return;
+    }
+    this.renderer.setLut(images.base, stock, images.extended);
+    this.renderer.render(this.comparing ? 0 : this.adjustments.intensity);
+  },
+
+  setThumbnail(stockId, src) {
+    const location = this.findStockLocation(stockId);
+    if (!location) {
+      return;
+    }
+    const thumb = {
+      status: src ? 'ready' : 'failed',
+      src: src || '',
+      color: ui.placeholderColor(stockId),
+    };
+    this.thumbs[stockId] = thumb;
+    this.setData({
+      [`categories[${location.category}].stocks[${location.stock}].thumb`]: thumb,
+    });
+  },
+
+  findStockLocation(stockId) {
+    const categories = this.data.categories || [];
+    for (let category = 0; category < categories.length; category += 1) {
+      const stocks = categories[category].stocks || [];
+      for (let stock = 0; stock < stocks.length; stock += 1) {
+        if (stocks[stock].id === stockId) {
+          return { category, stock };
+        }
+      }
+    }
+    return null;
+  },
+
+  observeThumbnails() {
+    if (typeof wx.createIntersectionObserver !== 'function') {
+      return;
+    }
+    try {
+      if (this.observer && this.observer.disconnect) {
+        this.observer.disconnect();
+      }
+      this.observer = wx.createIntersectionObserver({
+        thresholds: [0, 0.01],
+        observeAll: true,
+      });
+      this.observer.relativeToViewport({ bottom: 240 }).observe('.stock-card', (result) => {
+        if (!result || !result.id) {
+          return;
+        }
+        this.prioritiseThumbnail(String(result.id).replace(/^stock-/, ''));
+      });
+    } catch (error) {
+      this.observer = null;
+    }
+  },
+
+  prioritiseThumbnail(stockId) {
+    if (!stockId || this.thumbs[stockId]) {
+      return;
+    }
+    this.visibleStockIds[stockId] = true;
+    const index = this.thumbQueue.findIndex((item) => item.id === stockId);
+    if (index > 0) {
+      const item = this.thumbQueue.splice(index, 1)[0];
+      this.thumbQueue.unshift(item);
+    }
+  },
+
+  // --- panel toggles and about --------------------------------------------
+
+  onToggleAdjustments() {
+    this.setData({ adjustOpen: !this.data.adjustOpen });
+  },
+
+  onTogglePost() {
+    this.setData({ postOpen: !this.data.postOpen });
+  },
+
+  onToggleAbout() {
+    this.setData({ aboutOpen: !this.data.aboutOpen });
+  },
+
+  onCopySourceUrl() {
+    wx.setClipboardData({
+      data: this.data.sourceUrl,
+      success: () => {
+        wx.showToast({ title: '链接已复制', icon: 'none' });
+      },
+      fail: () => {
+        wx.showToast({ title: '复制失败，请手动记录', icon: 'none' });
+      },
+    });
+  },
+
+  // --- misc ----------------------------------------------------------------
+
   onClearPhoto() {
     this.operationId += 1;
     this.stockRequestId += 1;
     this.photoSize = null;
+    this.activeStock = null;
+    this.comparing = false;
+    this.resetThumbnails();
     if (this.renderer) {
       this.renderer.clearPhoto();
       this.renderer.resize(1, 1);
     }
+    this.transition('clear');
     this.setData({
       hasPhoto: false,
       busy: false,
       busyText: '',
       error: '',
       selectedStock: '',
-      intensity: 1,
-      intensityText: '100%',
+      selectedStockName: '',
       comparing: false,
       canvasStyle: 'width: 1px; height: 1px;',
+      categories: [],
     });
   },
 
@@ -363,5 +769,6 @@ Page({
 
   showError(message) {
     this.setData({ error: message, busy: false, busyText: '', comparing: false });
+    this.comparing = false;
   },
 });

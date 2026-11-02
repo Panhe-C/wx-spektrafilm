@@ -294,7 +294,8 @@ def main() -> int:
         all(pair["pass"] for pair in pairs) and all(check["pass"] for check in intensity_checks)
         and all(pair["pass"] for pair in adjustments) and all(item["pass"] for item in thumbnails)
         and timing_pass
-        and bool(render_results.get("lutContract", {}).get("missingExtendedThrows"))
+        and bool(render_results.get("lutContract", {}).get("noExtended"))
+        and bool(render_results.get("lutContract", {}).get("drawWithoutExtendedThrows"))
         and bool(render_results.get("lutContract", {}).get("extendedAccepted"))
     )
     worst_mean = max(pairs, key=lambda pair: pair["meanDeltaE"])

@@ -262,7 +262,8 @@ async function main() {
     const lutContract = await page.evaluate(
       (id) => window.spektrafilmHarness.verifyLutContract(id), stocks[0].id
     );
-    if (!lutContract.missingExtendedThrows || !lutContract.extendedAccepted) {
+    if (!lutContract.noExtended || !lutContract.drawWithoutExtendedThrows ||
+      !lutContract.extendedAccepted) {
       throw new Error(`LUT upload contract failed: ${JSON.stringify(lutContract)}`);
     }
 

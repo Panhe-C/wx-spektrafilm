@@ -28,7 +28,24 @@ The LUT asset subpackage is loaded lazily after the first pick and decoded LUTs 
 memory. See `docs/RENDERER.md` and `docs/ORIENTATION.md` for implementation details and
 `docs/LIMITATIONS.md` for the real-device verification boundary.
 
-## Adjustments (renderer ready, UI in the next step)
+## Presets and adjustments
+
+- **Preset picker** grouped into 彩色负片 / 反转片（幻灯片）/ 电影胶片. Every card shows the
+  stock name, its ISO speed, one Chinese line about the stock, and a thumbnail rendered from the
+  current photo at a 96 px long edge.
+- **Thumbnails** are generated lazily — the selected stock first, then the cards that scroll into
+  view, then the rest — cached per photo and stock, invalidated on a new photo, and never
+  regenerated while a slider moves. If every export route fails, the card shows a coloured
+  placeholder instead of a broken image.
+- **Adjustments panel**: 曝光 EV (−2…+2), 色温, 色调, 强度, and a collapsed 「后期微调（非胶片物理）」
+  group with 对比度 and 饱和度. One 「重置」 button restores all of them.
+- **About section**: the spektrafilm credit (Andrea Volpato), the project URL, the licence split
+  (GPLv3 code, CC BY-SA 4.0 LUT data), the version, and the note that grain/halation and other
+  spatial effects are not included.
+- The page structure, the phase state machine, the thumbnail path and the real-device checklist
+  are documented in `docs/UI.md`.
+
+## Adjustments (physics and model)
 
 The renderer exposes a verified adjustment path: camera-side exposure EV (−2…+2), white balance
 (temperature and tint, −100…+100 each), and clearly non-physical post-LUT contrast/saturation.
@@ -37,9 +54,9 @@ linear light before the film LUT, and they are validated against full spektrafil
 references. See `docs/ADJUSTMENTS.md` for the model and `docs/EXPOSURE_EV.md` for the measurements
 and the candidate decision.
 
-The Phase-4b presets UI (stock cards with thumbnails, sliders, reset) is not implemented yet; the
-renderer API, the shared mapping module `utils/adjust.js`, and the offscreen
-`renderer.renderToPixels()` thumbnail path are in place and verified headlessly.
+The base cube `<id>.png` and the extended two-stop cube `<id>.ev2.png` are both cached, but the
+extended cube is only fetched when a positive EV or a nonidentity white balance actually needs
+it.
 
 ## Verification
 
@@ -47,7 +64,7 @@ renderer API, the shared mapping module `utils/adjust.js`, and the offscreen
 # JSON/page/runtime-import/shader/WXML/WXSS/package-size checks (no AppID required)
 python3 tools/check_miniprogram.py
 
-# EXIF and adjustment unit tests, then the full Chrome/SwiftShader versus NumPy comparison
+# EXIF, adjustment, UI-state and page-wiring unit tests, then the full Chrome/SwiftShader versus NumPy comparison
 cd harness
 npm i
 npm test
@@ -58,30 +75,30 @@ npm run study:ev
 
 The harness expects `/workspace/testphotos/p*.jpg`, Chrome at `/usr/bin/google-chrome`, and the
 Python scientific environment described in `docs/RENDERER.md`. It runs the orientation policy and
-matrix unit tests and the adjustment-mapping unit tests before launching Chrome. It writes
-`harness/out/report.{json,md}`, per-pair shader/Python/diff PNGs, per-adjustment PNGs, thumbnails,
-and `harness/out/contact-{shader,adjust,thumbs}.jpg`. Outputs and test photos are not committed.
-A real AppID/private key would be needed for `miniprogram-ci`; static and headless checks do not
-replace WeChat DevTools or physical-device testing.
+matrix unit tests, the adjustment-mapping unit tests, the UI-state unit tests, and the page-wiring
+tests before launching Chrome. It writes `harness/out/report.{json,md}`, per-pair shader/Python/diff PNGs, per-adjustment
+PNGs, thumbnails, and `harness/out/contact-{shader,adjust,thumbs}.jpg`. Outputs and test photos
+are not committed. A real AppID/private key would be needed for `miniprogram-ci`; static and
+headless checks do not replace WeChat DevTools or physical-device testing.
 
 The final on-box full run passed **66/66 default pairs**, **11/11 intensity checks**, **61/61
 adjustment pairs**, and **11/11 thumbnails**. Worst default mean ΔE2000 was **0.00052035**, worst
 default maximum **1.21046424**, worst adjustment mean **0.00044731**, and worst adjustment maximum
-**1.22417927**. Median render/readback was **19.65 ms**, median thumbnail setLut+render+readback
-**1.80 ms**, and median full-preview stock switch **15.10 ms**. The generated `harness/out/report.md`
+**1.22417927**. Median render/readback was **18.55 ms**, median thumbnail setLut+render+readback
+**1.20 ms**, and median full-preview stock switch **18.20 ms**. The generated `harness/out/report.md`
 contains the per-stock and per-photo tables. These are headless measurements, not phone timings.
 
 ## Layout
 
 - `app.js`, `app.json`, `app.wxss` — Mini Program entry
-- `pages/` — native picker and preview page
-- `utils/`, `renderer/` — shared WebGL renderer, adjustment mapping, generated GLSL module, photo preparation, fallback stub
+- `pages/` — native picker, preset picker, adjustments panel and about page
+- `utils/`, `renderer/` — shared WebGL renderer, adjustment mapping, UI state policy, thumbnail export, generated GLSL module, photo preparation, fallback stub
 - `shaders/` — canonical WebGL1 GLSL sources shared with the headless harness
 - `subpackages/luts/` — lazily loaded LUTs/manifest plus the required no-op subpackage page
 - `harness/` — Puppeteer/Chrome and NumPy numerical verification (not shipped in the app)
 - `tools/` — Python LUT tooling and static Mini Program checks (uses `/workspace/venv-sf`)
 - `assets/` — other static assets
-- `docs/` — format, renderer, adjustments, orientation, exposure, limitations, validation, and previews
+- `docs/` — format, renderer, adjustments, UI, orientation, exposure, limitations, validation, and previews
 
 ## Film LUT scope
 

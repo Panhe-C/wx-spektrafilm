@@ -109,9 +109,21 @@ references remain on the build box; they are not committed to the Mini Program p
   with `tools/lut_apply.py` and the NumPy adjustment reference; it is **not** a WeChat DevTools or
   physical-device certification. WebGL context creation, `canvas.createImage`, offscreen Canvas2D,
   `wx.loadSubpackage`, touch/slider behaviour, and real GPU rounding still need target-device tests.
+- The pure UI policy (slider ranges and steps, readouts, category grouping, thumbnail geometry and
+  ordering, the setData throttle, and the phase machine) is unit-tested in Node, and the phase
+  machine is the only place that decides the busy mask. The *visual* result of that policy —
+  spacing, touch targets, safe-area padding, thumbnail scheduling, and the press-and-hold
+  comparison — is only as good as the device rendering of it; see the checklist in `docs/UI.md`.
+- The preset thumbnails are rendered from the current photo at the stock's default look. They are
+  not a per-stock preview of the user's own adjustment state, and they are regenerated for every
+  new photo.
 - The offscreen `renderToPixels()` path used for thumbnails has been verified headlessly only. On a
   real device the framebuffer readback path and the `putImageData`/temp-file conversion still need
-  a device test; the WeChat-specific thumbnail plumbing is Phase 4b.
+  a device test. The WeChat export order is `wx.canvasToTempFilePath({ canvas })` → `toDataURL` →
+  a built-in PNG encoder written to `USER_DATA_PATH` → a coloured placeholder, and the last step
+  guarantees that a failed export degrades to a placeholder instead of a broken image. Whether
+  `wx.canvasToTempFilePath` accepts an offscreen canvas depends on the base library version, so
+  the fallback chain matters on older devices; `docs/UI.md` lists the device checks.
 - The fragment shader requests high precision where available and has a mediump fallback for WebGL1
   compatibility. A mediump-only GPU can have different interpolation/rounding error and must not be
   assumed to inherit the headless highp measurements.
@@ -133,7 +145,8 @@ references remain on the build box; they are not committed to the Mini Program p
 
 ## Still deferred to later phases
 
-Grain, halation/scatter, diffusion, blur/sharpening, glare, export/save, the preset/adjustment UI,
-privacy review, and release work remain unimplemented. The current product is a picker and
-interactive LUT preview; the exposure, white-balance, and post-LUT controls exist as a verified
-renderer API (`docs/ADJUSTMENTS.md`) but are not yet exposed in the UI.
+Grain, halation/scatter, diffusion, blur/sharpening, glare, export/save, privacy review, and
+release work remain unimplemented. The presets picker, the adjustments panel, and the about
+section are implemented (Phase 4b, `docs/UI.md`); the exposure, white-balance, and post-LUT
+controls are exposed in the UI and remain backed by the verified renderer API
+(`docs/ADJUSTMENTS.md`).

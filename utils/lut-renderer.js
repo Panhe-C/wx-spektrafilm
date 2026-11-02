@@ -192,22 +192,40 @@
       };
     }
 
+    function uploadExtended(source, metadata) {
+      const extended = validateLutMetadata(metadata);
+      const headroomEv = Number(metadata.headroomEv);
+      if (!Number.isFinite(headroomEv) || headroomEv <= 0) {
+        throw new Error('Extended LUT headroomEv must be positive');
+      }
+      upload(gl.TEXTURE2, extendedLutTexture, source);
+      return Object.assign(extended, { headroomEv });
+    }
+
+    // The extended cube is optional here: it is loaded lazily and only when a
+    // positive EV or a nonidentity white balance actually needs it. Drawing
+    // without it raises a clear error in draw().
     function setLut(source, metadata, extendedSource) {
       const base = validateLutMetadata(metadata);
       lut = Object.assign(base, { extended: null });
       upload(gl.TEXTURE1, lutTexture, source);
-      if (metadata.extended) {
-        if (!extendedSource) {
-          throw new Error(`Extended LUT source is required for ${metadata.id || 'this stock'}`);
-        }
-        const extended = validateLutMetadata(metadata.extended);
-        const headroomEv = Number(metadata.extended.headroomEv);
-        if (!Number.isFinite(headroomEv) || headroomEv <= 0) {
-          throw new Error('Extended LUT headroomEv must be positive');
-        }
-        upload(gl.TEXTURE2, extendedLutTexture, extendedSource);
-        lut.extended = Object.assign(extended, { headroomEv });
+      if (metadata.extended && extendedSource) {
+        lut.extended = uploadExtended(extendedSource, metadata.extended);
       }
+    }
+
+    function setExtendedLut(source, metadata) {
+      if (!lut) {
+        throw new Error('A base LUT must be selected before the extended LUT');
+      }
+      if (!metadata) {
+        throw new Error('Extended LUT metadata is required');
+      }
+      lut.extended = uploadExtended(source, metadata);
+    }
+
+    function hasExtendedLut() {
+      return !!(lut && lut.extended);
     }
 
     function setAdjustments(patch) {
@@ -390,6 +408,8 @@
       resize,
       setPhoto,
       setLut,
+      setExtendedLut,
+      hasExtendedLut,
       setAdjustments,
       getAdjustments,
       render,

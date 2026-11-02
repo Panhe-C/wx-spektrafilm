@@ -5,9 +5,11 @@
   "description": "Headless WebGL-versus-NumPy verification for wx-spektrafilm",
   "type": "module",
   "scripts": {
-    "test": "node test-orientation.mjs && node test-adjust.mjs && node run.mjs",
+    "test": "node test-orientation.mjs && node test-adjust.mjs && node test-ui-state.mjs && node test-page.mjs && node run.mjs",
     "test:orientation": "node test-orientation.mjs",
     "test:adjust": "node test-adjust.mjs",
+    "test:ui": "node test-ui-state.mjs",
+    "test:page": "node test-page.mjs",
     "test:smoke": "node test-adjust.mjs && node run.mjs --smoke",
     "study:ev": "cd .. && PYTHON=${PYTHON:-/workspace/venv-sf/bin/python} && $PYTHON tools/study_exposure_ev.py --resume && $PYTHON tools/study_white_balance.py --resume"
   },

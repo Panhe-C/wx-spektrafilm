@@ -3,8 +3,8 @@
 Film modeling powered by [spektrafilm](https://github.com/andreavolpato/spektrafilm).
 
 This document describes the Phase-4a adjustment model, the shared JavaScript API, the exact
-operation order, and the limits of each control. The **UI is Phase 4b**; only the renderer,
-mapping module, and verification exist today.
+operation order, and the limits of each control. The Phase-4b UI that exposes these controls is
+described in `docs/UI.md`.
 
 ## Control summary
 
@@ -108,12 +108,21 @@ renderer.renderToPixels({                  // offscreen render + readback
   adjustments,                             // optional temporary state
   onTiming,                                // optional timing hook
 });
+renderer.setLut(base, metadata, extended); // extended is optional
+renderer.setExtendedLut(extended, metadata);
+renderer.hasExtendedLut();
 ```
 
 `renderToPixels` renders into a cached RGBA framebuffer, reads it back with `readPixels`, returns
 top-down `RGBA8` pixels, restores the preview framebuffer and viewport, and reports
 `{ submitMs, renderMs, readPixelsMs, totalMs }`. The renderer has no dependency on the adjustment
 UI, so Phase 4b can drive it directly.
+
+The page drives the renderer directly from the slider events: `bindchanging` applies the new
+state and redraws the preview without any `setData`, and only the numeric readouts are written to
+the view, throttled to one update per 120 ms. The pure part of that policy — ranges, step
+rounding, readout formatting, the "needs the extended cube" decision and the throttle — lives in
+`utils/ui-state.js` and is unit-tested by `harness/test-ui-state.mjs`.
 
 ## Verification
 
@@ -126,7 +135,13 @@ UI, so Phase 4b can drive it directly.
   the midpoint;
 - thumbnail generation through `renderToPixels`, including framebuffer restoration and
   independence from live adjustments;
+- the lazy extended-cube contract (select without the extended cube, expect a clear failure,
+  upload it, expect the draw to succeed);
 - stock-switch and thumbnail timing.
+
+It also runs the plain-Node unit suites: the EXIF policy/matrix tests, the adjustment-mapping
+tests, and the UI-state tests (ranges, steps, readouts, grouping, thumbnail policy, throttle,
+phase machine, PNG fallback encoder).
 
 `cd harness && npm run study:ev` re-runs the physical faithfulness study against full
 `simulate()`; it is resumable and is not part of `npm test`.

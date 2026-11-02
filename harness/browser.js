@@ -1,4 +1,4 @@
-/* global SpektrafilmRenderer, SpektrafilmAdjustments */
+/* global SpektrafilmRenderer, SpektrafilmAdjustments, SpektrafilmUiState */
 (function initialiseHarness() {
   let renderer = null;
   let manifest = null;
@@ -7,6 +7,7 @@
   const lutBitmaps = new Map();
   const syncPixel = new Uint8Array(4);
   const canvas = document.getElementById('webgl');
+  const DEFAULTS = SpektrafilmAdjustments.DEFAULTS;
 
   async function fetchBlob(path) {
     const response = await fetch(path, { cache: 'no-store' });
@@ -69,7 +70,7 @@
     context.drawImage(photoBitmap, 0, 0, size.width, size.height);
     renderer.resize(size.width, size.height);
     renderer.setPhoto(inputCanvas);
-    renderer.setAdjustments(SpektrafilmAdjustments.DEFAULTS);
+    renderer.setAdjustments(DEFAULTS);
     renderer.render(0);
     renderer.finish();
     return {
@@ -89,39 +90,59 @@
     return stock;
   }
 
+  // The base cube is cached immediately; the extended cube is fetched the
+  // first time a positive EV or a nonidentity white balance needs it. This
+  // mirrors the Mini Program page.
   async function cacheStock(id) {
     if (!lutBitmaps.has(id)) {
       const stock = stockById(id);
-      const requests = [decode(`/subpackages/luts/${stock.file}`)];
-      if (stock.extended) {
-        requests.push(decode(`/subpackages/luts/${stock.extended.file}`));
-      }
-      const [base, extended] = await Promise.all(requests);
-      lutBitmaps.set(id, { base, extended });
+      const base = await decode(`/subpackages/luts/${stock.file}`);
+      lutBitmaps.set(id, { base, extended: null, extendedPromise: null });
     }
     return lutBitmaps.get(id);
   }
 
-  function selectCachedStock(id) {
+  async function ensureExtended(id) {
+    const images = await cacheStock(id);
+    if (!images.extended && !images.extendedPromise) {
+      const stock = stockById(id);
+      images.extendedPromise = decode(`/subpackages/luts/${stock.extended.file}`)
+        .then((bitmap) => {
+          images.extended = bitmap;
+          images.extendedPromise = null;
+          return bitmap;
+        })
+        .catch((error) => {
+          images.extendedPromise = null;
+          throw error;
+        });
+    }
+    if (images.extendedPromise) {
+      await images.extendedPromise;
+    }
+    return images;
+  }
+
+  function selectCachedStock(id, withExtended) {
     const stock = stockById(id);
     const images = lutBitmaps.get(id);
     if (!images) {
       throw new Error(`Stock ${id} is not decoded`);
     }
-    renderer.setLut(images.base, stock, images.extended);
+    renderer.setLut(images.base, stock, withExtended ? images.extended : null);
   }
 
   async function loadStock(id) {
     await cacheStock(id);
-    selectCachedStock(id);
+    selectCachedStock(id, false);
   }
 
   async function render(id, intensity, adjustments) {
-    await loadStock(id);
-    renderer.setAdjustments({
-      ...SpektrafilmAdjustments.DEFAULTS,
-      ...(adjustments || {}),
-    });
+    const state = { ...DEFAULTS, ...(adjustments || {}) };
+    const needsExtended = state.ev > 0 || state.temperature !== 0 || state.tint !== 0;
+    const images = needsExtended ? await ensureExtended(id) : await cacheStock(id);
+    renderer.setLut(images.base, stockById(id), needsExtended ? images.extended : null);
+    renderer.setAdjustments(state);
     const start = performance.now();
     renderer.render(intensity);
     renderer.finish();
@@ -138,30 +159,28 @@
 
   async function thumbnail(id) {
     await cacheStock(id);
-    const landscape = inputCanvas.width >= inputCanvas.height;
-    const width = landscape ? 96 : Math.max(1, Math.round(96 * inputCanvas.width / inputCanvas.height));
-    const height = landscape ? Math.max(1, Math.round(96 * inputCanvas.height / inputCanvas.width)) : 96;
+    const size = SpektrafilmUiState.thumbnailSize(inputCanvas.width, inputCanvas.height);
     // Deliberately nonidentity live state proves the explicit thumbnail override.
     renderer.setAdjustments({ ev: 1, temperature: 50, contrast: 0.5, saturation: 1.5 });
     const started = performance.now();
-    selectCachedStock(id);
+    selectCachedStock(id, false);
     const result = renderer.renderToPixels({
-      width,
-      height,
+      width: size.width,
+      height: size.height,
       intensity: 1,
-      adjustments: SpektrafilmAdjustments.DEFAULTS,
+      adjustments: DEFAULTS,
     });
     const switchMs = performance.now() - started;
     const restored = renderer.gl.getParameter(renderer.gl.FRAMEBUFFER_BINDING) === null;
     const output = document.createElement('canvas');
-    output.width = width;
-    output.height = height;
+    output.width = size.width;
+    output.height = size.height;
     const context = output.getContext('2d', { alpha: false });
-    context.putImageData(new ImageData(new Uint8ClampedArray(result.pixels), width, height), 0, 0);
+    context.putImageData(new ImageData(new Uint8ClampedArray(result.pixels), size.width, size.height), 0, 0);
     return {
       stock: id,
-      width,
-      height,
+      width: size.width,
+      height: size.height,
       switchMs,
       timing: result.timing,
       restored,
@@ -172,26 +191,44 @@
 
   async function timeStockSwitch(id) {
     await cacheStock(id);
-    renderer.setAdjustments(SpektrafilmAdjustments.DEFAULTS);
+    renderer.setAdjustments(DEFAULTS);
     const started = performance.now();
-    selectCachedStock(id);
+    selectCachedStock(id, false);
     renderer.render(1);
     renderer.finish();
     renderer.gl.readPixels(0, 0, 1, 1, renderer.gl.RGBA, renderer.gl.UNSIGNED_BYTE, syncPixel);
     return { stock: id, switchMs: performance.now() - started };
   }
 
+  // Contract: the extended cube may be absent until it is needed. Selecting a
+  // stock must succeed, drawing with a positive EV without it must fail with a
+  // clear message, and uploading it later must fix the draw.
   async function verifyLutContract(id) {
     const stock = stockById(id);
     const images = await cacheStock(id);
-    let missingExtendedThrows = false;
+    renderer.setLut(images.base, stock);
+    const noExtended = !renderer.hasExtendedLut();
+    let drawWithoutExtendedThrows = false;
     try {
-      renderer.setLut(images.base, stock);
+      renderer.setAdjustments({ ev: 1 });
+      renderer.render(1);
+      renderer.finish();
     } catch (error) {
-      missingExtendedThrows = /Extended LUT source is required/.test(error.message);
+      drawWithoutExtendedThrows = /no extended-range LUT/.test(error.message);
     }
-    renderer.setLut(images.base, stock, images.extended);
-    return { stock: id, missingExtendedThrows, extendedAccepted: true };
+    renderer.setAdjustments(DEFAULTS);
+    renderer.setExtendedLut(images.extended, stock.extended);
+    const extendedAccepted = renderer.hasExtendedLut();
+    renderer.setAdjustments({ ev: 1 });
+    renderer.render(1);
+    renderer.finish();
+    renderer.setAdjustments(DEFAULTS);
+    return {
+      stock: id,
+      noExtended,
+      drawWithoutExtendedThrows,
+      extendedAccepted,
+    };
   }
 
   window.spektrafilmHarness = {

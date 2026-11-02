@@ -33,41 +33,217 @@
     <view wx:if="{{comparing}}" class="compare-badge">原始照片</view>
   </view>
 
-  <view wx:if="{{hasPhoto}}" class="controls">
-    <scroll-view scroll-x enhanced show-scrollbar="{{false}}" class="stock-scroll">
-      <view class="stock-list">
-        <view
-          wx:for="{{stocks}}"
-          wx:key="id"
-          class="stock-item {{selectedStock === item.id ? 'stock-selected' : ''}}"
-          data-id="{{item.id}}"
-          bindtap="onStockTap"
-        >
-          <view class="stock-name">{{item.name}}</view>
-          <view class="stock-category">{{item.category}} · ISO {{item.iso}}</view>
+  <scroll-view class="body-scroll" scroll-y enhanced show-scrollbar="{{false}}">
+    <view class="body-inner">
+
+      <view class="section">
+        <view class="section-header">
+          <text class="section-title">胶片预设</text>
+          <text class="section-hint">{{selectedStockName ? selectedStockName : '未选择'}}</text>
+        </view>
+        <view wx:for="{{categories}}" wx:for-item="category" wx:key="key" class="category">
+          <view class="category-title">{{category.title}}</view>
+          <view class="stock-grid">
+            <view
+              wx:for="{{category.stocks}}"
+              wx:for-item="stock"
+              wx:key="id"
+              id="stock-{{stock.id}}"
+              class="stock-card {{selectedStock === stock.id ? 'stock-selected' : ''}}"
+              data-id="{{stock.id}}"
+              bindtap="onStockTap"
+            >
+              <view class="thumb-box">
+                <image
+                  wx:if="{{stock.thumb.status === 'ready'}}"
+                  class="stock-thumb"
+                  src="{{stock.thumb.src}}"
+                  mode="aspectFit"
+                ></image>
+                <view
+                  wx:else
+                  class="stock-thumb thumb-placeholder"
+                  style="background-color: {{stock.thumb.color}}"
+                >
+                  <text class="thumb-glyph">▦</text>
+                </view>
+              </view>
+              <view class="stock-info">
+                <view class="stock-name">{{stock.name}}</view>
+                <view class="stock-meta">ISO {{stock.iso}}</view>
+                <view class="stock-desc">{{stock.description}}</view>
+              </view>
+            </view>
+          </view>
+        </view>
+        <view wx:if="{{!hasPhoto}}" class="section-empty">选择照片后显示各胶片预览</view>
+      </view>
+
+      <view class="section">
+        <view class="section-header section-header-tap" bindtap="onToggleAdjustments">
+          <text class="section-title">调整</text>
+          <text class="section-chevron">{{adjustOpen ? '收起' : '展开'}}</text>
+        </view>
+        <view wx:if="{{adjustOpen}}" class="section-body">
+          <view class="slider-row">
+            <text class="slider-label">曝光 EV</text>
+            <slider
+              class="control-slider"
+              min="-2"
+              max="2"
+              step="0.1"
+              value="{{adjustments.ev}}"
+              data-key="ev"
+              activeColor="#d6b98a"
+              backgroundColor="#3a3a3a"
+              block-color="#f2dfc0"
+              block-size="18"
+              bindchanging="onAdjustChanging"
+              bindchange="onAdjustChange"
+            />
+            <text class="slider-value">{{readouts.ev}}</text>
+          </view>
+          <view class="slider-row">
+            <text class="slider-label">色温</text>
+            <slider
+              class="control-slider"
+              min="-100"
+              max="100"
+              step="1"
+              value="{{adjustments.temperature}}"
+              data-key="temperature"
+              activeColor="#d6b98a"
+              backgroundColor="#3a3a3a"
+              block-color="#f2dfc0"
+              block-size="18"
+              bindchanging="onAdjustChanging"
+              bindchange="onAdjustChange"
+            />
+            <text class="slider-value">{{readouts.temperature}}</text>
+          </view>
+          <view class="slider-row">
+            <text class="slider-label">色调</text>
+            <slider
+              class="control-slider"
+              min="-100"
+              max="100"
+              step="1"
+              value="{{adjustments.tint}}"
+              data-key="tint"
+              activeColor="#d6b98a"
+              backgroundColor="#3a3a3a"
+              block-color="#f2dfc0"
+              block-size="18"
+              bindchanging="onAdjustChanging"
+              bindchange="onAdjustChange"
+            />
+            <text class="slider-value">{{readouts.tint}}</text>
+          </view>
+          <view class="slider-row">
+            <text class="slider-label">强度</text>
+            <slider
+              class="control-slider"
+              min="0"
+              max="1"
+              step="0.01"
+              value="{{adjustments.intensity}}"
+              data-key="intensity"
+              activeColor="#d6b98a"
+              backgroundColor="#3a3a3a"
+              block-color="#f2dfc0"
+              block-size="18"
+              bindchanging="onAdjustChanging"
+              bindchange="onAdjustChange"
+            />
+            <text class="slider-value">{{readouts.intensity}}</text>
+          </view>
+
+          <view class="group-header section-header-tap" bindtap="onTogglePost">
+            <text class="group-title">后期微调（非胶片物理）</text>
+            <text class="section-chevron">{{postOpen ? '收起' : '展开'}}</text>
+          </view>
+          <view wx:if="{{postOpen}}" class="group-body">
+            <view class="slider-row">
+              <text class="slider-label">对比度</text>
+              <slider
+                class="control-slider"
+                min="-1"
+                max="1"
+                step="0.01"
+                value="{{adjustments.contrast}}"
+                data-key="contrast"
+                activeColor="#8fb0d6"
+                backgroundColor="#3a3a3a"
+                block-color="#cfe0f5"
+                block-size="18"
+                bindchanging="onAdjustChanging"
+                bindchange="onAdjustChange"
+              />
+              <text class="slider-value">{{readouts.contrast}}</text>
+            </view>
+            <view class="slider-row">
+              <text class="slider-label">饱和度</text>
+              <slider
+                class="control-slider"
+                min="0"
+                max="2"
+                step="0.05"
+                value="{{adjustments.saturation}}"
+                data-key="saturation"
+                activeColor="#8fb0d6"
+                backgroundColor="#3a3a3a"
+                block-color="#cfe0f5"
+                block-size="18"
+                bindchanging="onAdjustChanging"
+                bindchange="onAdjustChange"
+              />
+              <text class="slider-value">{{readouts.saturation}}</text>
+            </view>
+            <view class="group-note">对比度与饱和度只改变显示观感，不属于胶片物理过程。</view>
+          </view>
+
+          <view wx:if="{{extendedLoading}}" class="inline-note">正在载入扩展 LUT…</view>
+
+          <view class="panel-actions">
+            <button
+              class="reset-button"
+              disabled="{{!resetEnabled}}"
+              bindtap="onResetAdjustments"
+            >重置</button>
+          </view>
+          <view class="panel-hint">按住预览查看原图，松开恢复胶片效果</view>
         </view>
       </view>
-    </scroll-view>
 
-    <view class="intensity-row">
-      <text class="control-label">强度</text>
-      <slider
-        class="intensity-slider"
-        min="0"
-        max="1"
-        step="0.01"
-        value="{{intensity}}"
-        activeColor="#d6b98a"
-        backgroundColor="#444444"
-        block-color="#f2dfc0"
-        block-size="20"
-        bindchanging="onIntensityChanging"
-        bindchange="onIntensityChange"
-      />
-      <text class="intensity-value">{{intensityText}}</text>
+      <view class="section">
+        <view class="section-header section-header-tap" bindtap="onToggleAbout">
+          <text class="section-title">关于</text>
+          <text class="section-chevron">{{aboutOpen ? '收起' : '展开'}}</text>
+        </view>
+        <view wx:if="{{aboutOpen}}" class="section-body">
+          <view class="about-row">
+            <text class="about-key">色彩模拟</text>
+            <text class="about-value">胶片模拟基于 spektrafilm（Andrea Volpato）</text>
+          </view>
+          <view class="about-row">
+            <text class="about-key">项目地址</text>
+            <text class="about-link" bindtap="onCopySourceUrl">{{sourceUrl}}</text>
+          </view>
+          <view class="about-row">
+            <text class="about-key">许可</text>
+            <text class="about-value">本项目代码以 GPLv3 发布；LUT 与色彩配置数据来自 spektrafilm，遵循 CC BY-SA 4.0（Andrea Volpato）。</text>
+          </view>
+          <view class="about-row">
+            <text class="about-key">版本</text>
+            <text class="about-value">{{version}}</text>
+          </view>
+          <view class="about-note">当前未包含颗粒、光晕等空间效果。</view>
+        </view>
+      </view>
+
+      <view class="body-tail"></view>
     </view>
-    <view class="hint">按住预览查看原图，松开恢复胶片效果</view>
-  </view>
+  </scroll-view>
 
   <view wx:if="{{busy && !hasPhoto}}" class="initial-loading">
     <view class="loading-spinner"></view>

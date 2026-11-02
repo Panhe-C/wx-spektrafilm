@@ -1,7 +1,8 @@
-# Phase 4a implementation progress
+# Phase 4 implementation progress
 
-This log covers **Phase 4 step 4a only**. The presets/adjustments UI (4b) is deliberately not
-implemented. No git commits are made. Film modeling powered by
+This log covers **Phase 4 steps 4a and 4b**. The later 4c items that are not part of the shipped
+presets/adjustments UI (the heavy physical faithfulness study) are run on demand through
+`npm run study:ev`. No git commits are made by the agent. Film modeling powered by
 [spektrafilm](https://github.com/andreavolpato/spektrafilm).
 
 ## Milestone 0 — scope and baseline inspected
@@ -145,3 +146,76 @@ implemented. No git commits are made. Film modeling powered by
 - [x] Implement shared adjustment mapping, canonical shader path, renderer adjustments/readback API.
 - [x] Add NumPy references and default/EV/WB/post-adjustment/thumbnail/timing harness checks.
 - [x] Final full harness, static checks, sizes, documentation, and residual-risk report.
+
+## Phase 4b — presets UI, adjustments panel and about section
+
+### Milestone 1 — pure UI policy first
+
+- Added `utils/ui-state.js`: a side-effect-free module with the adjustment defaults, ranges and
+  steps, the readout formatting, the "needs the extended cube" decision, the category grouping and
+  the Chinese one-line stock descriptions, the placeholder colour, the thumbnail geometry, the
+  thumbnail ordering, the `shouldEmit()` throttle policy, and the phase state machine.
+- Added `harness/test-ui-state.mjs` and wired it into `npm test`. The suite covers the step
+  rounding and clamping of every slider, the readout formats, the real manifest grouping
+  (3 categories, 11 stocks), the thumbnail geometry/ordering, the throttle, every valid and
+  invalid phase transition, and a byte-level check of the PNG fallback encoder (inflated with
+  Node's zlib and compared against the source pixels).
+- Added `harness/test-page.mjs`, which loads `pages/index/index.js` under a mocked WeChat host
+  and exercises the page: the phase machine, the slider path (the renderer is updated at once,
+  the readouts stay throttled), the reset, press-and-hold, the thumbnail placeholder fallback,
+  and the existence of every WXML handler. It caught a real robustness bug: `exportPixels()`
+  called `canvas.getContext()` on a canvas stub without a guard and threw instead of degrading
+  to the placeholder.
+- The first run caught two mismatches: `pro400h` is a colour negative (the test expectation was
+  wrong) and `thumbnailSize()` upscaled a 1×1 photo (the policy was wrong; it now never
+  upscales).
+
+### Milestone 2 — lazy base/extended LUT handling
+
+- Relaxed `renderer.setLut()` so the extended cube is optional, added `setExtendedLut()` and
+  `hasExtendedLut()`, and kept the clear `This stock has no extended-range LUT for positive EV/WB`
+  failure at draw time. The page now fetches `<id>.ev2.png` only when a positive EV or a
+  nonidentity white balance needs it and caches it afterwards.
+- Rewrote the harness contract check: selecting a stock without the extended cube must succeed,
+  drawing with EV 1 must fail with the clear message, and uploading the extended cube later must
+  fix the draw. The browser harness now loads the extended cube lazily, exactly like the page.
+
+### Milestone 3 — page, presets, thumbnails
+
+- Rewrote `pages/index/index.{js,wxml,wxss}`: a fixed dark layout with a pinned action bar, a
+  scrollable body, three preset categories, preset cards with name/ISO/description/thumbnail, the
+  adjustments panel (曝光 EV, 色温, 色调, 强度 and a collapsed 「后期微调（非胶片物理）」 group),
+  one 「重置」 button, and the 「关于」 section with the spektrafilm credit, the project URL, the
+  licence split, the version and the grain/halation note.
+- Added `utils/thumbnail.js`: RGBA pixels → `wx.canvasToTempFilePath` → `toDataURL` → a built-in
+  PNG encoder written to `USER_DATA_PATH` → a coloured placeholder. The PNG encoder and the
+  base64 encoder are pure and unit-tested.
+- Thumbnails are generated lazily (selected stock first, then the cards the
+  `IntersectionObserver` reports as visible or near, then the rest), one per short timeout, cached
+  per photo and stock, invalidated on a new photo, and never regenerated while a slider moves.
+  The active stock's cube is restored and the preview is redrawn after every thumbnail.
+- Sliders call the renderer directly on `bindchanging`; only the numeric readouts reach the view,
+  throttled to one small `setData` per 120 ms. `bindchange` writes the final value at once.
+
+### Milestone 4 — documentation, static checks, verification
+
+- Added `docs/UI.md` (page structure, phase machine, thumbnail path, slider/`setData` policy,
+  real-device checklist) and updated `docs/RENDERER.md`, `docs/ADJUSTMENTS.md`,
+  `docs/LIMITATIONS.md`, and the README feature list.
+- Extended `tools/check_miniprogram.py` with duplicate element-id detection, a `wx:for` without
+  `wx:key` warning, and relative-`require` resolution. Each new check was verified to fire.
+- Final full harness run: **PASS** — 66/66 default pairs, 11/11 intensity checks, 61/61
+  adjustment pairs, 11/11 thumbnails, LUT contract green. Median render/readback **19.00 ms**,
+  median thumbnail switch **1.20 ms**, median full-preview stock switch **18.20 ms**.
+- Final static checks: **PASS**. Main package **92,006 bytes (89.8 KiB)**; LUT subpackage
+  **1,063,412 bytes (1038.5 KiB)** against the 1,200,000-byte budget.
+- No git commit was made.
+
+### Residual risks
+
+- Every visual behaviour (spacing, safe area, slider feel, thumbnail scheduling, the
+  `IntersectionObserver` promotion, the export fallback chain) still needs the real-device
+  checklist in `docs/UI.md`.
+- `wx.canvasToTempFilePath` with an offscreen canvas depends on the base library version; the
+  fallback chain exists for that reason and is the part most likely to need tuning on an old
+  device.
