@@ -206,6 +206,96 @@ Under `harness/` (Node, not shipped in the Mini Program package):
 - `docs/LIMITATIONS.md` updated: DevTools/real-device unverified; Canvas2D fallback stub only;
   grain/halation etc. still later.
 
+## Phase 4 — Presets UI + basic adjustments
+
+Rules unchanged: native Mini Program, GLSL single source of truth in `shaders/` (embedded via
+`tools/embed_shaders.py`), no duplicated lookup math, main package < 2 MB, LUT subpackage budget
+total < ~1.2 MB (currently 0.29 MB), local commits only, GPLv3 + spektrafilm credit.
+
+### 4a. Faithful exposure (EV) and white balance — study first, then implement
+Principle: LUTs are baked from spektrafilm's physical pipeline at camera EV 0; any control that
+touches the *input side* must be a camera-side operation in LINEAR light before the LUT, and must be
+validated against the real `simulate()` with the same setting.
+
+1. **Exposure EV** (slider about -2 .. +2 EV, step 0.1, default 0). Semantics: real camera exposure
+   compensation with the print exposure FIXED (like printing at a fixed enlarger time) = what a
+   photographer sees as over/under-exposing film. In spektrafilm terms:
+   `camera.exposure_compensation_ev = EV` with `enlarger.print_exposure_compensation = False`
+   (all other params identical to the baked recipe; confirm EV=0 reproduces the shipped LUT).
+   Also report, for information, the behaviour with `print_exposure_compensation = True`
+   (auto-printing, which nearly cancels EV for negatives; slides unaffected by the flag).
+   Candidate implementations — measure, then pick the most faithful within the subpackage budget:
+   (A) shader multiplies linear RGB by 2^EV before the LUT (input then clipped to 0..1 sRGB range);
+   (B) extended-range LUTs (input shaper covering e.g. up to +2 stops of linear headroom, so
+       gained highlights are not clipped) via the LUT creator's input shaper/`stops_above_gray`
+       machinery or an equivalent that stays within spektrafilm's own parameters;
+   (C) a small set of baked EV LUTs (e.g. -1/0/+1) interpolated in the shader;
+   (D) combinations. Do not invent ad-hoc curves: the reference is always full `simulate()`.
+   Evaluate EV in {-2,-1,-0.5,+0.5,+1,+2} on the 6 test photos x 11 stocks (use a representative
+   subset if too slow; at least 4 stocks incl. 1 slide and 1 cinema, 3 photos): report mean/p95/p99/max
+   dE2000 of (shader/LUT path) vs (full simulate with same EV). Targets: mean dE < 1.0 and p95 < 2.5 for
+   |EV| <= 1; for |EV| <= 2 report honestly and, if worse, limit the slider range to what is faithful.
+   Document in `docs/EXPOSURE_EV.md` with tables and the decision.
+2. **White balance** (temperature -100..+100 and tint -100..+100, default 0): camera-side gains in
+   linear sRGB RGB before the LUT: derive from a documented, simple model (e.g. Bradford chromatic
+   adaptation between D65 and a CCT in [~3000K, ~12000K] mapped from the slider, plus a green/magenta
+   tint axis), applied as a 3-vector gain uniform (`uWbGain`) combined with EV into one linear gain
+   uniform `uLinearGain` (vec3). Reference for validation: apply the SAME gains to the linear input in
+   Python, run the full `simulate()` on that, compare with the shader path (dE as above, for several
+   settings, e.g. temp +-50, tint +-50). Slider mapping function lives in a pure JS module shared with the
+   harness (`utils/adjust.js`), unit-tested (monotonic, identity at 0, gains normalised to preserve
+   luminance Y of white).
+3. Pre-LUT path in the shader: sRGB->linear (exact piecewise sRGB), multiply by `uLinearGain`, clamp to
+   [0,1] (or extended-range handling per decision above), linear->sRGB, then LUT. At defaults (gain=1) the
+   output must equal Phase-3 output within 1 code (regression check against `tools/lut_apply.py`).
+4. Optional **post-LUT** tweaks, clearly labelled "后期微调（非胶片物理）" in UI and docs:
+   contrast (-1..1 pivot at 0.5 in sRGB-encoded domain; default 0) and saturation (0..2; default 1; use
+   Rec.709 luma). Identity at defaults. Applied after the intensity mix? Decide and document (prefer: after
+   LUT, before intensity mix is wrong; apply after the mix on the final colour). Harness vs Python reference.
+5. Intensity (existing) stays; before/after (press & hold) shows the untouched original.
+
+### 4b. Presets UI
+- Stock picker grouped by category with section headers: 彩色负片 / 反转片（幻灯片）/ 电影胶片.
+  Each card: name, ISO, a short Chinese description (1 line, factual & tasteful; written by the agent from
+  the stocks' known character and our measurements, avoid false claims), and a **thumbnail** rendered from the
+  current photo.
+- **Thumbnails**: generated lazily (visible/near first, others idle), size ~96x(aspect) px, rendered via the shared renderer
+  into a small framebuffer / offscreen target, read back (or equivalent) into an image the `<image>` tag can
+  show (data URL or temp file; document the WeChat-specific path and what the harness can verify), cached per
+  (photo id, stock). Invalidate on new photo; thumbnails show the stock at intensity 1 with default
+  adjustments (do not regenerate on every slider move). Switching stock in the harness must take < 300 ms
+  median (setLut + render + readback), measured and reported.
+- Adjustments panel (collapsible, below the picker): 曝光 EV, 色温, 色调, 强度, and a collapsed
+  「后期微调」 group (对比度, 饱和度). Numeric readouts. A single 「重置」 button resets all adjustments
+  (not the photo/stock); long-press compare remains.
+- 「关于」 section (collapsible/modal): "胶片模拟基于 spektrafilm（Andrea Volpato）"; link text to
+  github.com/andreavolpato/spektrafilm; licence notes (GPLv3 code; LUT data CC BY-SA 4.0); version; "当前未包含颗粒、光晕等空间效果".
+- Dark, clean, polished Chinese UI (WXSS): consistent spacing, touch targets >= 44rpx height,
+  safe-area padding, disabled/loading states, no layout jumps. Respect low-end devices: no heavy per-frame
+  setData; slider `bindchanging` updates the renderer directly and throttles `setData` for readouts.
+
+### 4c. Verification
+- Extend the harness (`npm test`) with: (i) identity regression vs Phase-3 outputs, (ii) EV/WB/contrast/
+  saturation shader paths vs Python references (`tools/` or `harness/compare.py`), thresholds mean dE2000 < 0.3
+  and max < 2.0 for the *shader vs Python implementation of the same math*, (iii) the separate faithfulness study
+  numbers vs full `simulate()` (heavy; run via `npm run study:ev`, results committed as docs, not in the default
+  `npm test`), (iv) thumbnail generation + stock switch timing, (v) pure-JS unit tests for slider mappings.
+- Static checks: extend `tools/check_miniprogram.py`: every `bind*/catch*` handler named in WXML exists on the page;
+  WXML tags balanced; every `{{data}}` root identifier used in WXML exists in `data` or is a wx:for item
+  (best effort); WXSS has no `@import` of missing files and no unsupported selectors (`*`, `:hover` on
+  non-hover-class is OK to flag as warning); sizes < limits.
+- Produce `harness/out/contact-adjust.jpg`: one photo, one stock, rows for EV -2..+2, WB cool/warm, and
+  contrast/saturation extremes (labelled), plus `harness/out/contact-thumbs.jpg` showing the 11 generated
+  thumbnails.
+
+### Acceptance (Phase 4)
+- 4a decision documented with numbers; mismatch vs full physics reported honestly; slider range chosen accordingly.
+- Harness all-green on defaults regression + new paths; stock switch median < 300 ms; thumbnails generated for all
+  11 stocks.
+- Main package < 2 MB; LUT subpackage < ~1.2 MB total; report sizes.
+- Static checks pass; docs: `docs/EXPOSURE_EV.md`, `docs/ADJUSTMENTS.md`, `docs/RENDERER.md` updated, `docs/LIMITATIONS.md`,
+  README feature list updated.
+
 ## Later phases
-4 presets UI polish; 5 effects (grain/halation shaders) & export (`wx.canvasToTempFilePath` +
-`wx.saveImageToPhotosAlbum`); 6 release (privacy policy, review). Server mode remains dropped.
+5 effects (grain/halation shaders) & export (`wx.canvasToTempFilePath` + `wx.saveImageToPhotosAlbum`);
+6 release (privacy policy, review). Server mode remains dropped.
