@@ -35,8 +35,7 @@ done
 
 # Reuses each full simulate() reference for all three resolutions, selects N,
 # and writes docs/validation.{json,md} plus build/selected_resolution.json.
-python tools/validate_luts.py
-
+python tools/validate_luts.py --resume --reuse-overall
 selected="$(python -c "import json; print(json.load(open('build/selected_resolution.json'))['selected_resolution'])")"
 cp "build/bake-manifest-$selected.json" build/bake_manifest.json
 python tools/convert_luts.py \

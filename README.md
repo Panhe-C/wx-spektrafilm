@@ -40,4 +40,7 @@ vignette-like diffusion), not hidden inside the colour tables. `docs/LIMITATIONS
 boundary and the exposure/tonality trade-offs.
 
 The tiled-grid PNG layout and shader half-texel/trilinear contract are in `docs/LUT_FORMAT.md`.
+The final Phase 1c assets use **N=33** in **290.1 KiB** across 11 stocks. Exact pixel-pooled
+natural-image error versus full `simulate()` is **0.2829 mean / 0.6140 p95 / 0.8296 p99 /
+1.6896 maximum dE2000**; every stock passes the mean<1.0 and p95<3.0 criteria.
 Python regeneration instructions are in `tools/README.md`.

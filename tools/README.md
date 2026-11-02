@@ -29,7 +29,7 @@ for n in 33 49 65; do
   python tools/convert_luts.py --manifest "build/bake-manifest-$n.json" \
     --output-dir "build/tiled/$n" --clean
 done
-python tools/validate_luts.py                    # selects N; docs/validation.{json,md}
+python tools/validate_luts.py --resume --reuse-overall # selects N; docs/validation.{json,md}
 python tools/convert_luts.py --manifest build/bake-manifest-<selected>.json \
   --output-dir subpackages/luts --clean          # final delivery assets
 python tools/make_contact_sheet.py               # both docs/lut-*.jpg sheets
@@ -57,8 +57,10 @@ All 11 stocks use exactly the same parameter choices:
 
 - sRGB input/output with CCTF decode/encode at the LUT/reference boundary; the encoded sRGB cube
   domain is the shaper. `stops_above_midgray=log2(1/0.18)=2.473931188332`, so input gain is 1.0.
-- Fixed `camera.exposure_compensation_ev=-0.6522495`, the median of center-weighted
-  `measure_autoexposure_ev` over six normal phone JPEGs. Image-dependent auto exposure is off.
+- Fixed `camera.exposure_compensation_ev=0.0` globally. sRGB code 118 decodes to approximately
+  0.18 linear metered mid-grey. The measured −0.652 EV median remains only an exploration
+  diagnostic: print compensation cancels it for negatives but it underexposes direct-scan slides.
+  Image-dependent auto exposure is off.
 - `enlarger.print_exposure=1.0`, print exposure compensation and midgray normalization on,
   `illuminant="TH-KG3"`, database neutral filters on, and zero creative Y/M shifts.
 - Scanner white and black correction on at levels 0.98 and 0.01. These deterministic physical
@@ -73,7 +75,7 @@ Scanner unsharp masking stays off. No per-stock exposure, shadow, white, or neut
 `tools/explore_exposure.py` compares native/zero/median, upstream +4-stop, scanner white/black,
 print compensation/normalization, and ±0.5 print-EV candidates on neutral ramps and all six phone
 photos. Measurements and selection reasoning are in `docs/EXPOSURE.md`; the soft white≥240 goal is
-not met and darker direct-scan slides are disclosed rather than fitted away.
+not met, and the zero-EV choice avoids the median candidate's direct-scan slide underexposure.
 
 ## Stocks and print choices
 
@@ -97,7 +99,12 @@ node statistics before its required `[0,1]` clamp. N=33, 49, and 65 are baked an
 are row-major in eight columns; `luts.json` stores `size`, `cols`, `rows`, `width`, `height`, and
 `bytes`. See `docs/LUT_FORMAT.md` for exact addressing and shader half-texel rules.
 
-Validation reuses each full physical reference for all three N values. It selects the smallest N
+Validation reuses each full physical reference for all three N values. Completed stocks are
+checkpointed in `build/validation-stocks/`; `--resume` reuses those results, while
+`--combine-only` only rebuilds combined reports. Exact overall/subset percentiles are pooled from
+temporary per-stock delta arrays. After a report-only failure, `--combine-only --reuse-overall`
+reuses those pools only when the selected N and complete physical recipe snapshot match.
+Validation selects the smallest N
 whose package is below 1.5 MiB, whose per-stock natural mean/p95 limits pass, and whose **every
 stock's pooled natural p95 is within 0.1 dE2000 of the same stock at N=65**. The decision and raw
 study are in `build/selected_resolution.json` and `build/resolution-study.json`; summaries and the
@@ -121,5 +128,8 @@ or if the selected package is too large.
 `docs/lut-preview.jpg` contains original | full physical | LUT triplets for Portra 400, Ektar 100,
 and Velvia 100 on two phone photos, with FULL↔LUT absolute-code and ΔE2000 statistics.
 `docs/lut-all-stocks.jpg` contains the unmodified original and all 11 LUT looks on one normally
-exposed phone photo. Both are limited to 800 KB. Excluded spatial/stochastic effects and other
+exposed phone photo. Both are limited to 800 KB. The final run selected **N=33** at **297,046
+bytes (290.1 KiB)**; exact pooled natural-image mean/p95/p99/MAX are **0.2829/0.6140/0.8296/
+1.6896 dE2000**. Ektar has one explicitly reported sub-one-code 8-bit highlight plateau; no
+physical response was altered to remove it. Excluded spatial/stochastic effects and other
 boundaries are documented in `docs/LIMITATIONS.md` and the root `README.md`.

@@ -6,6 +6,7 @@ import argparse
 import gc
 import json
 import math
+import shutil
 from pathlib import Path
 from time import perf_counter
 
@@ -33,6 +34,13 @@ VALIDATION_JSON = ROOT / "docs" / "validation.json"
 VALIDATION_MD = ROOT / "docs" / "validation.md"
 STUDY_JSON = BUILD_DIR / "resolution-study.json"
 CHOICE_JSON = BUILD_DIR / "selected_resolution.json"
+STOCK_RESULT_DIR = BUILD_DIR / "validation-stocks"
+DELTA_DIR = BUILD_DIR / "validation-deltas"
+SUBSET_NAMES = (
+    "shadows_Lstar_lt_20",
+    "highlights_Lstar_gt_85",
+    "saturated_Cstarab_gt_50",
+)
 NATURAL_MEAN_LIMIT = 1.0
 NATURAL_P95_LIMIT = 3.0
 RESOLUTION_P95_TOLERANCE = 0.1
@@ -139,6 +147,25 @@ def _ramp_record(reference: np.ndarray, applied: np.ndarray) -> dict:
     lut_strict = bool(
         lut_mean[indices[230]] < lut_mean[indices[250]] < lut_mean[indices[255]]
     )
+    lut_non_decreasing = bool(
+        lut_mean[indices[230]] <= lut_mean[indices[250]] <= lut_mean[indices[255]]
+    )
+    physical_steps = [
+        float(ref_mean[indices[250]] - ref_mean[indices[230]]),
+        float(ref_mean[indices[255]] - ref_mean[indices[250]]),
+    ]
+    lut_steps = [
+        float(lut_mean[indices[250]] - lut_mean[indices[230]]),
+        float(lut_mean[indices[255]] - lut_mean[indices[250]]),
+    ]
+    # An 8-bit table cannot strictly encode a physical rise smaller than one
+    # code after rounding. Accept only a non-decreasing, sub-one-code plateau;
+    # reversals and plateaus spanning >=1 physical code remain hard failures.
+    quantization_plateau = bool(
+        physical_strict and not lut_strict and lut_non_decreasing
+        and all(lut_step > 0.0 or physical_step < 1.0
+                for lut_step, physical_step in zip(lut_steps, physical_steps))
+    )
     return {
         "input_codes": RAMP_CODES.astype(int).tolist(),
         "physical_output_rgb8": reference.tolist(),
@@ -147,9 +174,16 @@ def _ramp_record(reference: np.ndarray, applied: np.ndarray) -> dict:
         "lut_output_mean8": lut_mean.tolist(),
         "lut_channel_spread8": spread.tolist(),
         "max_lut_channel_spread8": float(np.max(spread)),
+        "physical_near_white_steps8": physical_steps,
+        "lut_near_white_steps8": lut_steps,
         "physical_near_white_strictly_monotonic": physical_strict,
         "lut_near_white_strictly_monotonic": lut_strict,
-        "lut_did_not_introduce_flat_top": bool(lut_strict or not physical_strict),
+        "lut_near_white_non_decreasing": lut_non_decreasing,
+        "quantization_limited_plateau": quantization_plateau,
+        "lut_did_not_introduce_flat_top": bool(
+            lut_strict or quantization_plateau
+            or (not physical_strict and lut_non_decreasing)
+        ),
     }
 
 
@@ -160,6 +194,9 @@ def validate_stock(stock: dict, fixtures: list[dict], resolutions: list[int]) ->
         for n in resolutions
     }
     natural_deltas = {n: [] for n in resolutions}
+    natural_subset_deltas = {
+        n: {name: [] for name in SUBSET_NAMES} for n in resolutions
+    }
     for fixture in fixtures:
         source = load_fixture(fixture)
         # Public full simulate(), exactly the selected physical recipe. This is
@@ -168,6 +205,16 @@ def validate_stock(stock: dict, fixtures: list[dict], resolutions: list[int]) ->
             source.astype(np.float64) / 255.0, stock, resolution=max(resolutions)
         ), 0.0, 1.0)
         reference_lab = rgb2lab(reference)
+        subset_masks = None
+        if fixture["natural"]:
+            lab_flat = reference_lab.reshape(-1, 3)
+            subset_masks = {
+                "shadows_Lstar_lt_20": lab_flat[:, 0] < 20.0,
+                "highlights_Lstar_gt_85": lab_flat[:, 0] > 85.0,
+                "saturated_Cstarab_gt_50": np.hypot(
+                    lab_flat[:, 1], lab_flat[:, 2]
+                ) > 50.0,
+            }
         for n in resolutions:
             asset = assets[n]
             applied8 = apply_strip_lut(source, asset["png"], cols=LUT_COLS)
@@ -190,6 +237,8 @@ def validate_stock(stock: dict, fixtures: list[dict], resolutions: list[int]) ->
             by_resolution[n]["images"].append(result)
             if fixture["natural"]:
                 natural_deltas[n].append(delta)
+                for name, mask in subset_masks.items():
+                    natural_subset_deltas[n][name].append(delta[mask])
             if n == min(resolutions):
                 print(
                     f"  {fixture['id']:12s} N={n} mean={result['mean_dE2000']:.4f} "
@@ -216,8 +265,21 @@ def validate_stock(stock: dict, fixtures: list[dict], resolutions: list[int]) ->
         by_resolution[n]["grid"] = assets[n]["grid"]
         by_resolution[n]["package_bytes"] = assets[n]["package_bytes"]
         by_resolution[n]["preclip_edge"] = assets[n]["bake_record"].get("preclip_edge")
+        # Keep exact pooled deltas on disk only until all stocks are combined.
+        # This avoids retaining roughly 1 GB of study data in RAM and preserves
+        # exact overall percentiles for the selected resolution.
+        delta_dir = DELTA_DIR / str(n)
+        delta_dir.mkdir(parents=True, exist_ok=True)
+        np.save(delta_dir / f"{stock['id']}__natural.npy", values)
         del values
         natural_deltas[n] = []
+        for name in SUBSET_NAMES:
+            subset_values = (np.concatenate(natural_subset_deltas[n][name])
+                             if natural_subset_deltas[n][name]
+                             else np.empty(0, dtype=np.float32))
+            np.save(delta_dir / f"{stock['id']}__{name}.npy", subset_values)
+            del subset_values
+            natural_subset_deltas[n][name] = []
 
     selected_ramp_resolution = min(resolutions)
     ramp_source = _neutral_ramp()
@@ -275,6 +337,79 @@ def _resolution_summary(stock_results: dict[str, dict], resolutions: list[int]) 
     return summary
 
 
+def _overall_natural_metrics(selected: int, stocks: list[dict],
+                             reuse_overall: bool = False) -> dict:
+    """Exact pooled statistics from per-stock on-disk delta arrays.
+
+    ``reuse_overall`` is an explicit recovery path for report-only fixes after
+    a completed study. It accepts the existing summary only when both N and the
+    complete physical recipe snapshot match, preventing cross-recipe reuse.
+    """
+    pooled_anchor = DELTA_DIR / str(selected) / f"{stocks[0]['id']}__natural.npy"
+    if reuse_overall and not pooled_anchor.is_file() and VALIDATION_JSON.is_file():
+        existing = json.loads(VALIDATION_JSON.read_text(encoding="utf-8"))
+        current_settings = json.loads(json.dumps(recipe_snapshot(resolution=selected)))
+        if (existing["selection"]["selected_resolution"] == selected
+                and existing["settings"] == current_settings):
+            return existing["summary"]["natural_overall"]
+        raise RuntimeError("Existing overall metrics do not match selected N and physical recipe")
+    natural_pixels = 0
+    for stock in stocks:
+        path = DELTA_DIR / str(selected) / f"{stock['id']}__natural.npy"
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Missing pooled delta data {path}; rerun validation without --resume"
+            )
+        natural_pixels += int(np.load(path, mmap_mode="r").shape[0])
+
+    def collect(group: str) -> dict:
+        arrays = [
+            np.load(DELTA_DIR / str(selected) / f"{stock['id']}__{group}.npy", mmap_mode="r")
+            for stock in stocks
+        ]
+        nonempty = [array for array in arrays if array.size]
+        values = (np.concatenate(nonempty) if nonempty
+                  else np.empty(0, dtype=np.float32))
+        result = {
+            **(_stats(values) if values.size else {
+                "mean_dE2000": None, "p95_dE2000": None,
+                "p99_dE2000": None, "max_dE2000": None,
+            }),
+            "pixels": int(values.size),
+            "coverage_percent": float(values.size / natural_pixels * 100.0),
+        }
+        del values, nonempty, arrays
+        gc.collect()
+        return result
+
+    overall = {"natural": collect("natural")}
+    overall["subsets"] = {name: collect(name) for name in SUBSET_NAMES}
+    return overall
+
+
+def _quantization_summary(records: list[dict]) -> dict:
+    images = [image for stock in records for image in stock["images"]]
+    pixels = sum(image["quantization_only_8bit_nodes"]["pixels"] for image in images)
+    return {
+        "images": len(images),
+        "pixels": int(pixels),
+        "pixel_weighted_mean_dE2000": float(sum(
+            image["quantization_only_8bit_nodes"]["mean_dE2000"]
+            * image["quantization_only_8bit_nodes"]["pixels"] for image in images
+        ) / pixels),
+        "worst_image_p95_dE2000": float(max(
+            image["quantization_only_8bit_nodes"]["p95_dE2000"] for image in images
+        )),
+        "global_max_dE2000": float(max(
+            image["quantization_only_8bit_nodes"]["max_dE2000"] for image in images
+        )),
+        "pixel_weighted_mean_abs_8bit": float(sum(
+            image["quantization_only_8bit_nodes"]["mean_abs_8bit"]
+            * image["quantization_only_8bit_nodes"]["pixels"] for image in images
+        ) / pixels),
+    }
+
+
 def _markdown(payload: dict) -> str:
     selected = payload["selection"]["selected_resolution"]
     summary = payload["summary"]
@@ -304,9 +439,36 @@ def _markdown(payload: dict) -> str:
         f"- Stocks: **{summary['stocks_validated']}**; images per stock: **{summary['images_per_stock']}**.",
         f"- Natural-image limits: each stock's pooled mean <{NATURAL_MEAN_LIMIT:.1f} and p95 "
         f"<{NATURAL_P95_LIMIT:.1f} dE2000: **{'PASS' if summary['natural_targets_met'] else 'FAIL'}**.",
-        f"- Near-white LUT stage did not introduce a flat top: "
+        f"- Near-white non-decreasing response with no material LUT flat top: "
         f"**{'PASS' if summary['highlight_monotonicity_met'] else 'FAIL'}**.",
+        f"- Strict-rise exceptions caused solely by sub-one-code 8-bit rounding: "
+        f"**{', '.join(summary['highlight_quantization_plateaus']) or 'none'}**.",
         f"- Package <1.5 MiB: **{'PASS' if summary['package_target_met'] else 'FAIL'}**.",
+        "",
+        "### Overall natural-image and subset fidelity (selected N)",
+        "",
+        "These are exact pixel-pooled results across all 11 stocks and seven natural images,",
+        "not averages of per-image percentiles. Subsets are defined independently in each full",
+        "physical reference, so their pixels can overlap.",
+        "",
+        "| Population | Pixels (coverage) | Mean dE2000 | p95 | p99 | MAX |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    overall = summary["natural_overall"]
+    for name, result in (("All natural pixels", overall["natural"]), *overall["subsets"].items()):
+        lines.append(
+            f"| {name} | {result['pixels']} ({result['coverage_percent']:.2f}%) | "
+            f"{result['mean_dE2000']:.4f} | {result['p95_dE2000']:.4f} | "
+            f"{result['p99_dE2000']:.4f} | {result['max_dE2000']:.4f} |"
+        )
+    quant = summary["quantization_only_8bit_nodes"]
+    lines.extend([
+        "",
+        f"8-bit node quantization only (99 stock×image pairs): pixel-weighted mean "
+        f"**{quant['pixel_weighted_mean_dE2000']:.4f}**, worst image p95 "
+        f"**{quant['worst_image_p95_dE2000']:.4f}**, global MAX "
+        f"**{quant['global_max_dE2000']:.4f} dE2000**; mean absolute code error "
+        f"**{quant['pixel_weighted_mean_abs_8bit']:.4f}**.",
         "",
         "### Resolution / size / error trade-off",
         "",
@@ -315,7 +477,7 @@ def _markdown(payload: dict) -> str:
         "",
         "| N | Grid | Package KiB | Mean of stock natural means | Worst stock mean | Worst stock p95 | Max p95 increase vs 65 | Eligible |",
         "|---:|---|---:|---:|---:|---:|---:|:---:|",
-    ]
+    ])
     for n_text, study in payload["resolution_study"].items():
         lines.append(
             f"| {n_text} | {study['width']}×{study['height']} | {study['package_kib']:.1f} | "
@@ -382,7 +544,9 @@ def _markdown(payload: dict) -> str:
         "",
         "Each cell is `physical → LUT`. The spread column is for the LUT. Strict near-white",
         "monotonicity compares inputs 230 < 250 < 255. A physical flat/non-monotonic response is",
-        "distinguished from an additional flat top introduced by interpolation/quantization.",
+        "distinguished from an interpolation defect. `8-bit plateau` marks a non-decreasing LUT",
+        "plateau only where the full physical rise is below one output code and therefore cannot",
+        "remain strictly increasing after correct 8-bit rounding; it is reported, not retuned.",
         "",
         "| Stock | 0 | 20 | 45 | 60 | 80 | 118 | 170 | 200 | 230 | 250 | 255 | Max spread | LUT monotonic |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|:---:|",
@@ -394,9 +558,17 @@ def _markdown(payload: dict) -> str:
                 ramp["physical_output_mean8"], ramp["lut_output_mean8"]
             )
         )
+        if ramp["lut_near_white_strictly_monotonic"]:
+            ramp_status = "strict"
+        elif ramp["quantization_limited_plateau"]:
+            ramp_status = "8-bit plateau"
+        elif ramp["lut_did_not_introduce_flat_top"]:
+            ramp_status = "physical plateau"
+        else:
+            ramp_status = "FAIL"
         lines.append(
             f"| {stock['name']} | {cells} | {ramp['max_lut_channel_spread8']:.1f} | "
-            f"{'PASS' if ramp['lut_did_not_introduce_flat_top'] else 'FAIL'} |"
+            f"{ramp_status} |"
         )
     lines.extend([
         "",
@@ -438,29 +610,101 @@ def _markdown(payload: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _stock_result_path(stock_id: str, resolutions: list[int]) -> Path:
+    suffix = "-".join(str(n) for n in resolutions)
+    return STOCK_RESULT_DIR / f"{stock_id}-N{suffix}.json"
+
+
+def _save_stock_result(stock_id: str, by_resolution: dict,
+                       resolutions: list[int]) -> None:
+    STOCK_RESULT_DIR.mkdir(parents=True, exist_ok=True)
+    path = _stock_result_path(stock_id, resolutions)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps({
+        "id": stock_id,
+        "resolutions": resolutions,
+        "results": by_resolution,
+    }, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    progress = {
+        "completed_stocks": sorted(
+            path.stem.rsplit("-N", 1)[0]
+            for path in STOCK_RESULT_DIR.glob(f"*-N{'-'.join(map(str, resolutions))}.json")
+        ),
+        "resolutions": resolutions,
+    }
+    (BUILD_DIR / "validation-progress.json").write_text(
+        json.dumps(progress, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def _load_stock_result(stock_id: str, resolutions: list[int]) -> dict:
+    path = _stock_result_path(stock_id, resolutions)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload["resolutions"] != resolutions:
+        raise RuntimeError(f"{path}: resolution list does not match requested study")
+    results = {int(n): record for n, record in payload["results"].items()}
+    # Upgrade checkpointed ramps without resimulation when the report logic
+    # gains more explicit physical/quantization diagnostics.
+    for record in results.values():
+        ramp = record["ramp"]
+        record["ramp"] = _ramp_record(
+            np.asarray(ramp["physical_output_rgb8"], dtype=np.float64) / 255.0,
+            np.asarray(ramp["lut_output_rgb8"], dtype=np.uint8),
+        )
+    return results
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--resolutions", type=int, nargs="+", default=list(LUT_RESOLUTIONS))
     parser.add_argument("--stock", action="append", dest="stock_ids")
+    parser.add_argument("--resume", action="store_true",
+                        help="Reuse completed per-stock JSON results in build/validation-stocks")
+    parser.add_argument("--combine-only", action="store_true",
+                        help="Only combine saved per-stock results; run no simulations")
+    parser.add_argument("--reuse-overall", action="store_true",
+                        help="With --combine-only, reuse overall pools only if N and full recipe match")
     args = parser.parse_args()
     resolutions = sorted(set(args.resolutions))
     if not resolutions or any(n < 2 for n in resolutions):
         parser.error("resolutions must be integers >=2")
     if len(resolutions) > 1 and 65 not in resolutions:
         parser.error("a resolution study must include 65 as the comparison baseline")
+    if args.combine_only and args.stock_ids:
+        parser.error("--combine-only cannot be combined with --stock")
+    if not args.resume and not args.combine_only and DELTA_DIR.exists():
+        shutil.rmtree(DELTA_DIR)
 
-    stocks = load_stocks()
+    all_stocks = load_stocks()
+    stocks = all_stocks
     if args.stock_ids:
         selected = set(args.stock_ids)
         stocks = [stock for stock in stocks if stock["id"] in selected]
     fixtures = prepare_fixtures()
     stock_results = {}
     for stock in stocks:
+        result_path = _stock_result_path(stock["id"], resolutions)
+        if args.resume and result_path.is_file():
+            print(f"[resume] {stock['id']} <- {result_path}", flush=True)
+            stock_results[stock["id"]] = _load_stock_result(stock["id"], resolutions)
+            continue
+        if args.combine_only:
+            stock_results[stock["id"]] = _load_stock_result(stock["id"], resolutions)
+            continue
         started = perf_counter()
         print(f"[validate] {stock['id']} at N={resolutions}", flush=True)
         stock_results[stock["id"]] = validate_stock(stock, fixtures, resolutions)
-        print(f"[timing] {stock['id']}: {perf_counter() - started:.1f}s", flush=True)
+        _save_stock_result(stock["id"], stock_results[stock["id"]], resolutions)
+        print(f"[timing] {stock['id']}: {perf_counter() - started:.1f}s; saved {result_path}", flush=True)
         gc.collect()
+
+    if len(stocks) != len(all_stocks):
+        print(f"[partial] saved {len(stocks)} stock result(s); run --combine-only after all stocks", flush=True)
+        return
+    # A full invocation may have reused results; all_stocks defines stable order.
+    stock_results = {stock["id"]: stock_results[stock["id"]] for stock in all_stocks}
+    stocks = all_stocks
 
     study = _resolution_summary(stock_results, resolutions)
     eligible = [n for n in resolutions if study[str(n)]["eligible"]]
@@ -486,9 +730,12 @@ def main() -> None:
                    for stock_id, by_n in stock_results.items()},
     }, indent=2, allow_nan=False) + "\n", encoding="utf-8")
 
+    overall = _overall_natural_metrics(selected, stocks, reuse_overall=args.reuse_overall)
     summary = {
         "stocks_validated": len(selected_records),
         "images_per_stock": len(fixtures),
+        "natural_overall": overall,
+        "quantization_only_8bit_nodes": _quantization_summary(selected_records),
         "natural_targets_met": all(
             record["natural"]["mean_pass"] and record["natural"]["p95_pass"]
             for record in selected_records
@@ -496,6 +743,10 @@ def main() -> None:
         "highlight_monotonicity_met": all(
             record["ramp"]["lut_did_not_introduce_flat_top"] for record in selected_records
         ),
+        "highlight_quantization_plateaus": [
+            record["id"] for record in selected_records
+            if record["ramp"]["quantization_limited_plateau"]
+        ],
         "package_target_met": study[str(selected)]["within_package_budget"],
         "natural_mean_limit": NATURAL_MEAN_LIMIT,
         "natural_p95_limit": NATURAL_P95_LIMIT,
@@ -510,6 +761,7 @@ def main() -> None:
     }
     VALIDATION_JSON.write_text(json.dumps(payload, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     VALIDATION_MD.write_text(_markdown(payload), encoding="utf-8")
+    shutil.rmtree(DELTA_DIR, ignore_errors=True)
     print(
         f"[done] selected N={selected}; natural targets={summary['natural_targets_met']}; "
         f"highlights={summary['highlight_monotonicity_met']}; wrote {VALIDATION_MD}",

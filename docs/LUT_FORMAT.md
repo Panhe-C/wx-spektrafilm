@@ -76,7 +76,7 @@ into an adjacent, unrelated blue slice. Clamp final output to `[0,1]` and round 
 ## Physical boundary and clipping
 
 All stocks use sRGB input/output, topology `1lut`, native sRGB white headroom
-`log2(1/0.18)=2.473931188332` stops (input gain 1.0), and fixed camera compensation −0.6522495 EV.
+`log2(1/0.18)=2.473931188332` stops (input gain 1.0), and fixed camera compensation **0.0 EV**.
 Negative stocks include their selected paper print and normalized/compensated enlarger exposure.
 Slides use spektrafilm's direct positive-film scan (`io.scan_film=True`); their manifest print is an
 inactive runtime placeholder. Database neutral filters, TH-KG3, scanner white/black normalization

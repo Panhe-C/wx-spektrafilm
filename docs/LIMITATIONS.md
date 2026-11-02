@@ -35,15 +35,18 @@ own full-pipeline comparison.
 
 ## Exposure and tonality constraints
 
-`camera.auto_exposure` is image-dependent and cannot be baked. The LUT instead uses one fixed
-−0.6522495 EV camera compensation, the median measured over six normal phone photos. It is not a
-per-image exposure guarantee. Print compensation/normalization remains physical and deterministic.
-The common camera EV has no print-stage counterbalance for direct positive scans, so Velvia,
-Provia, and Kodachrome are darker than their zero-EV variants; this is disclosed in
-`docs/EXPOSURE.md` rather than repaired with a slide-only fit.
+`camera.auto_exposure` is image-dependent and cannot be baked. The LUT instead uses **0.0 EV**
+camera compensation globally: display sRGB code 118 decodes to approximately 0.18 linear metered
+mid-grey, which is the auto-exposure-equivalent setting for a balanced phone photo. The exploratory
+−0.652 EV median is not used: per-photo values scatter widely, print compensation cancels it for
+negative/print stocks, and without a print stage it made direct positive scans too dark. Zero EV
+keeps Velvia, Provia, and Kodachrome normally exposed without a slide-only exception. It is still
+not a per-image exposure guarantee. Print compensation/normalization remains physical and
+deterministic.
 
 Physical scanner white/black normalization is enabled at spektrafilm's 0.98/0.01 levels. It does
-not bring input white to the soft ~240 goal for these stocks (roughly 200–225 in the exploration),
+not bring input white to the soft ~240 goal for these stocks (roughly 206–225 in the zero-EV
+exploration),
 and neutral casts remain where the measured film/paper profiles create them. Ektar and Vision3
 can legitimately be dark or punchy. Those are properties of the selected physical recipe, not LUT
 interpolation errors.
@@ -56,8 +59,12 @@ interpolation errors.
   finite N nodes and uses trilinear interpolation; highly curved or discontinuous regions have
   larger error. See per-image, subset, and N=33/49/65 measurements in `docs/validation.md`.
 - Nodes and final output are 8-bit. Quantization-only error is reported separately from physical
-  interpolation error. The WebGL implementation must use the tiled-grid half-texel rule and two
-  bilinear blue-slice fetches to avoid slice-boundary bleeding.
+  interpolation error (final N=33: pixel-weighted mean **0.1319 dE2000**, worst-image p95
+  **0.7472**, global maximum **0.8122**). Ektar's physical 250→255 neutral rise is only 0.3697
+  code, so both correctly round to 225 at every tested N. This is a disclosed sub-one-code
+  quantization plateau, not repaired by altering the physical transform. The WebGL implementation
+  must use the tiled-grid half-texel rule and two bilinear blue-slice fetches to avoid
+  slice-boundary bleeding.
 - Spektrafilm's CAM16-UCS output gamut/lightness compression is part of both paths. Any residual
   floating-point excursion beyond `[0,1]` is clipped at the cube/display boundary; pre-clip node
   percentages are reported. Results are not a promise to reproduce an unclipped wide-gamut master.

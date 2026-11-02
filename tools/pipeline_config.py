@@ -33,7 +33,7 @@ TEST_PHOTO_DIR = TESTPHOTO_ROOT
 INPUT_COLOR_SPACE = "sRGB"
 OUTPUT_COLOR_SPACE = "sRGB"
 LUT_RESOLUTIONS = (33, 49, 65)
-LUT_RESOLUTION = 49
+LUT_RESOLUTION = 33
 LUT_COLS = 8
 LUT_GRID_COLS = LUT_COLS
 MAX_TEXTURE_SIDE = 2048
@@ -43,15 +43,18 @@ RAMP_CODES = np.array([0, 20, 45, 60, 80, 118, 170, 200, 230, 250, 255], dtype=n
 NATIVE_STOPS_ABOVE_MIDGRAY = math.log2(1.0 / 0.18)
 STOPS_ABOVE_MIDGRAY = NATIVE_STOPS_ABOVE_MIDGRAY
 UPSTREAM_SDR_STOPS = 4.0
-# Median of center-weighted auto-exposure measurements on the six supplied
-# normally exposed phone JPEGs. explore_exposure.py independently recomputes it.
+# Measured exploration diagnostic only. The per-photo values scatter widely and
+# print compensation cancels this offset for negative/print stocks but not for
+# direct-scan slides. It is therefore not used as the production exposure.
 AUTO_EXPOSURE_MEDIAN_EV = -0.6522495
-CAMERA_EXPOSURE_COMPENSATION_EV = AUTO_EXPOSURE_MEDIAN_EV
+# sRGB code 118 decodes to approximately 0.18 linear metered mid-grey: zero EV
+# is the auto-exposure-equivalent fixed setting for a balanced phone photo.
+CAMERA_EXPOSURE_COMPENSATION_EV = 0.0
 
 # One global recipe. Only film/paper data, database neutral filters, and the
 # positive-film direct-scan route vary per stock.
 GLOBAL_RECIPE = {
-    "id": "metered_native_scan_v1",
+    "id": "native_zero_scan_v2",
     "stops_above_midgray": STOPS_ABOVE_MIDGRAY,
     "camera_exposure_compensation_ev": CAMERA_EXPOSURE_COMPENSATION_EV,
     "enlarger_print_exposure": 1.0,

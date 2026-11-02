@@ -80,8 +80,8 @@ ness changes easier to read. Both are exposure diagnostics, not LUT-versus-refer
 | `native_black_only` | 2.473931 | -0.652250 | off/on | on/on | +0.00 | Isolate scanner black normalization (white correction off). |
 | `native_no_print_comp` | 2.473931 | -0.652250 | on/on | off/on | +0.00 | Scanner W+B; print normalized but camera compensation off. |
 | `native_no_print_norm` | 2.473931 | -0.652250 | on/on | on/off | +0.00 | Scanner W+B; print midgray normalization off. |
-| `native_print_minus_0_5` | 2.473931 | -0.652250 | on/on | on/on | -0.50 | Selected physical family with -0.5 EV enlarger exposure. |
-| `native_print_plus_0_5` | 2.473931 | -0.652250 | on/on | on/on | +0.50 | Selected physical family with +0.5 EV enlarger exposure. |
+| `native_print_minus_0_5` | 2.473931 | -0.652250 | on/on | on/on | -0.50 | Median-EV diagnostic with -0.5 EV enlarger exposure. |
+| `native_print_plus_0_5` | 2.473931 | -0.652250 | on/on | on/on | +0.50 | Median-EV diagnostic with +0.5 EV enlarger exposure. |
 
 ### Neutral ramp — `native_baseline`
 
@@ -358,57 +358,41 @@ Spread is the maximum neutral R/G/B channel spread over those inputs.
 
 ### Final global selection and reasoning
 
-**Selected:** native sRGB headroom `stops_above_midgray=log2(1/0.18)=2.473931188332`
-(input gain 1.0), fixed camera compensation **-0.652249582 EV** (the measured median),
-print exposure **1.0** (0 EV), print exposure compensation and midgray normalization **on**,
-TH-KG3 and database neutral filters, scanner white+black correction **on** at 0.98/0.01,
-and default input/output gamut compression. Positive stocks alone take `scan_film=True`.
-This is one recipe for all 11 stocks, with no per-stock exposure or neutral fitting.
+**Selected (`native_scan_zero`):** native sRGB headroom
+`stops_above_midgray=log2(1/0.18)=2.473931188332` (input gain 1.0), fixed camera
+compensation **0.0 EV globally**, print exposure **1.0** (0 EV), print exposure compensation
+and midgray normalization **on**, TH-KG3 and database neutral filters, scanner white+black
+correction **on** at 0.98/0.01, and default input/output gamut compression. Positive stocks
+alone take `scan_film=True`. This is one recipe for all 11 stocks, with no per-stock exposure
+or neutral fitting.
 
-The +4-stop candidate is rejected for display-referred phone JPEGs. With the same median
+The measured −0.652250 EV median is retained above as an exploration diagnostic, not used in
+production. Per-photo metering spans −0.906 to +0.806 EV, so a fixed non-zero offset is not a
+principled representation of a balanced phone photo. Display sRGB code 118 decodes to
+approximately 0.18 linear metered mid-grey, making **0 EV** the natural auto-exposure-equivalent
+fixed setting. The tables show the physical consequence: print compensation/normalization makes
+zero and median EV nearly identical for the eight negative/print stocks, while direct positive
+scans have no print stage to cancel the offset. At zero EV their median photo Y ratios are
+0.920–1.032 and code 118 is about 116; at median EV those fall to 0.594–0.657 and about 81–85.
+Zero EV therefore fixes the slide underexposure globally without a slide-only exception or
+fitted tone curve.
+
+The +4-stop candidate is rejected for display-referred phone JPEGs. With the exploratory median
 camera EV, its across-stock median photo Y ratio is **1.652**, mean encoded-luma change is
-**+33.71/255**, and negative-stock code 118 becomes roughly 182–212. The comparison image
-shows blown blankets/foliage, especially Ektar. Native gain plus the median has an overall
-median Y ratio of **0.870** and mean luma change **-17.04/255**; for the eight negative/print
-stocks the median per-stock Y ratios are 0.838–0.938. It retains a contrasty but plausible
-film exposure instead of manufacturing shoulder headroom by overexposing every midtone.
+**+33.71/255**, and negative-stock code 118 becomes roughly 182–212. The comparison image shows
+blown blankets/foliage, especially Ektar. Native gain at zero EV avoids manufacturing shoulder
+headroom by overexposing every midtone.
 
-Print compensation/normalization is retained from the physical GUI/filmroom defaults. With
-native gain and scanner correction, disabling print camera compensation drops negative code
-118 to roughly 77–85; a -0.5 EV print exposure instead raises it to about 160–164. These
-large movements are not a neutral exposure trim and are not used to chase ramp targets.
+Print compensation/normalization is retained from the physical GUI/filmroom defaults. Disabling
+print camera compensation in the exploratory median-EV candidate drops negative code 118 to
+roughly 77–85; a −0.5 EV print exposure instead raises it to about 160–164. These large
+movements are not a neutral exposure trim and are not used to chase targets.
 
-Scanner normalization raises white reach only modestly. The selected recipe reaches about
-199.5 (Kodachrome) to 225.3 (Ektar), not the soft ~240 goal. Ektar remains deliberately
-dark/punchy (code 60 ≈14.6; code 118 ≈110.6), and Vision3 retains a physical neutral channel
+Scanner normalization raises white reach only modestly. The selected zero-EV recipe reaches
+about 206.2 (Vision3) to 225.3 (Ektar), not the soft ~240 goal. Ektar remains legitimately
+dark/punchy (code 60 ≈15.8; code 118 ≈110.3), and Vision3 retains a physical neutral channel
 spread around 15 codes. No white-level, channel-alignment, or shadow-lift hack is added.
 
-**Known global-recipe trade-off:** direct positive scans have no print stage to compensate
-camera EV. Their selected code-118 values are about 81–85 and median photo Y ratios 0.594–
-0.657, versus 0.920–1.032 at zero camera EV. Thus the Plan-mandated measured-median fixed EV
-makes all three slide looks darker than the normally exposed phone originals. Zero EV would
-be preferable for slides in isolation, but selecting it only for slides would violate the
-one-global-recipe rule. This soft-goal miss is accepted and disclosed, not fitted away.
-
 The spektrafilm GUI and filmroom both default scanner corrections off. Enabling them here is
-therefore an explicit physical scan-normalization choice, not a claim about application
-defaults; the bake and every reference restore exactly the same settings after `lut_mode`.
-
-## Run status after interruption
-
-The full exploration above is the surviving measurement record and is not being repeated. The
-ignored `build/` directory was removed by the interrupted run, so the N=33/49/65 cubes and tiled
-grids are being regenerated from the unchanged recipe before validation. Published PNGs and
-`docs/validation.*` present at this point are stale Phase 1b artifacts and must not be used until
-regeneration finishes.
-
-### Regeneration progress
-
-- Exploration was reused from this document; no exposure sweep was repeated after interruption.
-- All 33/49/65 cubes and 8-column tiled grids were rebuilt successfully with the selected physical
-  recipe. Package sizes including manifests are **291,020 bytes (284.2 KiB)**, **741,007 bytes
-  (723.6 KiB)**, and **1,459,681 bytes (1425.5 KiB)**, respectively.
-- The baker's pre-clip diagnostics report **0.00000% of nodes with any encoded channel outside
-  [0,1]** for every stock/resolution. CAM16-UCS output compression is active in both paths; the
-  cube/display clip is consequently only a boundary safeguard for these bakes.
-- Full 11-stock × 9-image × 3-resolution validation is running from these regenerated assets.
+therefore an explicit physical scan-normalization choice, not a claim about application defaults;
+the bake and every reference restore exactly the same settings after `lut_mode`.
