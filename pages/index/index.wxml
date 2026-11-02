@@ -1,0 +1,6 @@
+<!-- pages/index/index.wxml -->
+<view class="container">
+  <view class="title">{{title}}</view>
+  <view class="subtitle">Film emulation for your photos</view>
+  <button class="choose-btn" bindtap="onChoosePhoto">Choose photo</button>
+</view>

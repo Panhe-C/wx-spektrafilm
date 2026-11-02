@@ -1,0 +1,9 @@
+{
+  "appid": "touristappid",
+  "compileType": "miniprogram",
+  "libVersion": "latest",
+  "miniprogramRoot": "./",
+  "setting": {
+    "urlCheck": false
+  }
+}

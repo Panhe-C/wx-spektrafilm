@@ -1,0 +1,13 @@
+{
+  "pages": [
+    "pages/index/index"
+  ],
+  "window": {
+    "navigationBarTitleText": "wx-spektrafilm",
+    "navigationBarBackgroundColor": "#1a1a1a",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#1a1a1a"
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

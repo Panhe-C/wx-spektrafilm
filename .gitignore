@@ -1,0 +1,7 @@
+node_modules/
+.venv/
+build/
+*.pyc
+__pycache__/
+project.private.config.json
+.DS_Store

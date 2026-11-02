@@ -1,0 +1,9 @@
+{
+  "desc": "sitemap for wx-spektrafilm",
+  "rules": [
+    {
+      "action": "allow",
+      "page": "*"
+    }
+  ]
+}
