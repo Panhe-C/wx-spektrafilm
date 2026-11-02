@@ -5,7 +5,8 @@
   "subpackages": [
     {
       "root": "subpackages/luts",
-      "name": "luts"
+      "name": "luts",
+      "pages": ["pages/empty/empty"]
     }
   ],
   "window": {

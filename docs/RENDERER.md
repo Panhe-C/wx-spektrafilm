@@ -22,6 +22,9 @@ The static checker rejects a stale embedding. The Mini Program and headless brow
 `utils/lut-renderer.js`; the browser reads the raw `.glsl` files, while the Mini Program uses their
 generated string embedding. There is no second copy of the lookup equations in the harness.
 
+The asset subpackage also declares the required no-op page `pages/empty/empty`; it is never
+navigated to and does not change the LUT manifest or PNG paths.
+
 ## Resize, upload, and draw
 
 `utils/photo.js` decodes the selected image, applies EXIF orientation, and draws directly into an
@@ -107,7 +110,8 @@ npm test
 The command requires `/usr/bin/google-chrome`, the six non-repository phone photos in
 `/workspace/testphotos/p*.jpg`, and the Python scientific environment (`numpy`, Pillow, and
 scikit-image; `/workspace/venv-sf/bin/python` on the build box). `PYTHON` and `TEST_PHOTOS` can
-override those two paths. `npm run test:smoke` runs only one pair and is not a substitute for `npm test`.
+override those two paths. `npm test` first runs the plain-Node EXIF policy/matrix suite, then starts
+Chrome. `npm run test:smoke` runs only one browser pair and is not a substitute for `npm test`.
 
 Chrome is launched with `--use-gl=swiftshader`, `--enable-webgl`, `--ignore-gpu-blocklist`, and
 `--headless=new`. The browser downscales each photo to a long edge of 1280 with the shared sizing

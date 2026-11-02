@@ -34,14 +34,15 @@ memory. See `docs/RENDERER.md` and `docs/ORIENTATION.md` for implementation deta
 # JSON/page/runtime-import/shader/package-size checks (no AppID required)
 python3 tools/check_miniprogram.py
 
-# Full 6-photo × 11-stock Chrome/SwiftShader versus NumPy comparison
+# EXIF unit tests, then full 6-photo × 11-stock Chrome/SwiftShader versus NumPy comparison
 cd harness
 npm i
 npm test
 ```
 
 The harness expects `/workspace/testphotos/p*.jpg`, Chrome at `/usr/bin/google-chrome`, and the
-Python scientific environment described in `docs/RENDERER.md`. It writes `harness/out/report.{json,md}`, per-pair
+Python scientific environment described in `docs/RENDERER.md`. It runs the orientation policy and
+matrix unit tests before launching Chrome. It writes `harness/out/report.{json,md}`, per-pair
 shader/Python/diff PNGs, and `harness/out/contact-shader.jpg`. Outputs and test photos are not
 committed. A real AppID/private key would be needed for `miniprogram-ci`; static and headless
 checks do not replace WeChat DevTools or physical-device testing.
@@ -57,7 +58,7 @@ contains the per-stock and per-photo tables. These are headless measurements, no
 - `pages/` — native picker and preview page
 - `utils/`, `renderer/` — shared WebGL renderer, generated GLSL module, photo preparation, fallback stub
 - `shaders/` — canonical WebGL1 GLSL sources shared with the headless harness
-- `subpackages/luts/` — lazily loaded tiled-grid PNG LUTs and manifest
+- `subpackages/luts/` — lazily loaded LUTs/manifest plus the required no-op subpackage page
 - `harness/` — Puppeteer/Chrome and NumPy numerical verification (not shipped in the app)
 - `tools/` — Python LUT tooling and static Mini Program checks (uses `/workspace/venv-sf`)
 - `assets/` — other static assets

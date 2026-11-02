@@ -1,6 +1,8 @@
 // Photo decoding, EXIF orientation and bounded one-pass preview resizing.
 const { computePreviewSize } = require('./lut-renderer.js');
 
+const EXIF_ORIENTATION_MODE = 'auto';
+
 const ORIENTATIONS = {
   1: 'up',
   2: 'up-mirrored',
@@ -66,6 +68,42 @@ function swapsDimensions(orientation) {
   return ['left-mirrored', 'right', 'right-mirrored', 'left'].indexOf(orientation) !== -1;
 }
 
+/**
+ * Pure EXIF policy decision. In auto mode, only orientations 5-8 can reveal
+ * engine-applied orientation: the decoded dimensions are swapped relative to
+ * wx.getImageInfo. Orientations 2-4 intentionally remain manual because their
+ * dimensions cannot reveal whether the engine already transformed pixels.
+ */
+function decideExifOrientation(options) {
+  const mode = options.mode || EXIF_ORIENTATION_MODE;
+  if (['auto', 'manual', 'engine'].indexOf(mode) === -1) {
+    throw new Error(`Unknown EXIF orientation mode: ${mode}`);
+  }
+  const orientation = normalizeOrientation(options.orientation);
+  const infoWidth = Number(options.infoWidth);
+  const infoHeight = Number(options.infoHeight);
+  const decodedWidth = Number(options.decodedWidth);
+  const decodedHeight = Number(options.decodedHeight);
+  const dimensions = [infoWidth, infoHeight, decodedWidth, decodedHeight];
+  if (dimensions.some((value) => !Number.isFinite(value) || value <= 0)) {
+    throw new Error('Invalid EXIF decision dimensions');
+  }
+  const sizeSwapDetected = swapsDimensions(orientation) &&
+    decodedWidth === infoHeight && decodedHeight === infoWidth &&
+    (decodedWidth !== infoWidth || decodedHeight !== infoHeight);
+  const engineApplied = mode === 'engine' || (mode === 'auto' && sizeSwapDetected);
+  const transformOrientation = engineApplied ? 'up' : orientation;
+  return {
+    orientation,
+    mode,
+    sizeSwapDetected,
+    engineApplied,
+    transformOrientation,
+    outputWidth: swapsDimensions(transformOrientation) ? decodedHeight : decodedWidth,
+    outputHeight: swapsDimensions(transformOrientation) ? decodedWidth : decodedHeight,
+  };
+}
+
 async function preparePhoto(options) {
   const info = await getImageInfo(options.src);
   const type = String(info.type || '').toLowerCase();
@@ -84,12 +122,17 @@ async function preparePhoto(options) {
     throw error;
   }
 
-  const orientation = normalizeOrientation(info.orientation);
-  const orientedWidth = swapsDimensions(orientation) ? sourceHeight : sourceWidth;
-  const orientedHeight = swapsDimensions(orientation) ? sourceWidth : sourceHeight;
+  const decision = decideExifOrientation({
+    orientation: info.orientation,
+    infoWidth: info.width,
+    infoHeight: info.height,
+    decodedWidth: sourceWidth,
+    decodedHeight: sourceHeight,
+    mode: options.orientationMode,
+  });
   const size = computePreviewSize(
-    orientedWidth,
-    orientedHeight,
+    decision.outputWidth,
+    decision.outputHeight,
     options.devicePixelRatio,
     options.maxTextureSize,
     1280
@@ -111,7 +154,9 @@ async function preparePhoto(options) {
   if ('imageSmoothingQuality' in context) {
     context.imageSmoothingQuality = 'high';
   }
-  const transform = orientationTransform(orientation, sourceWidth, sourceHeight);
+  const transform = orientationTransform(
+    decision.transformOrientation, sourceWidth, sourceHeight
+  );
   context.setTransform(...transform);
   context.drawImage(source, 0, 0, sourceWidth, sourceHeight);
   context.setTransform(1, 0, 0, 1, 0, 0);
@@ -123,11 +168,14 @@ async function preparePhoto(options) {
     height: size.height,
     sourceWidth,
     sourceHeight,
-    orientation,
+    orientation: decision.orientation,
+    engineApplied: decision.engineApplied,
   };
 }
 
 module.exports = {
+  EXIF_ORIENTATION_MODE,
+  decideExifOrientation,
   getImageInfo,
   loadCanvasImage,
   normalizeOrientation,

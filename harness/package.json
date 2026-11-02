@@ -5,7 +5,8 @@
   "description": "Headless WebGL-versus-NumPy verification for wx-spektrafilm",
   "type": "module",
   "scripts": {
-    "test": "node run.mjs",
+    "test": "node test-orientation.mjs && node run.mjs",
+    "test:orientation": "node test-orientation.mjs",
     "test:smoke": "node run.mjs --smoke"
   },
   "license": "GPL-3.0-only",

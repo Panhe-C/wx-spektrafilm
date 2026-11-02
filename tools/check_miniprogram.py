@@ -115,6 +115,13 @@ def main() -> int:
         print(f"Cannot continue: {error}")
         return 1
 
+    packages = app.get("subpackages", app.get("subPackages", []))
+    for package in packages:
+        if not isinstance(package.get("pages"), list) or not package["pages"]:
+            errors.append(f"Subpackage {package.get('root', '?')} must declare a nonempty pages list")
+
+    # page_entries() prefixes each subpackage page with its root before these
+    # existence checks, so both main-package and subpackage pages are covered.
     pages = page_entries(app)
     for entry in pages:
         for extension in ("js", "json", "wxml", "wxss"):

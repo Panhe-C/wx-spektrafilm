@@ -89,10 +89,11 @@ references remain on the build box; they are not committed to the Mini Program p
 - The fragment shader requests high precision where available and has a mediump fallback for WebGL1
   compatibility. A mediump-only GPU can have different interpolation/rounding error and must not be
   assumed to inherit the headless highp measurements.
-- The six headless phone fixtures are EXIF orientation 1. All eight orientation transforms are
-  implemented and matrix-tested, but rotated/mirrored WeChat images have not been visually verified.
-  Browser Canvas2D downsampling is shared conceptually with the app, but it is not the WeChat native
-  decoder/resizer. See `docs/ORIENTATION.md`.
+- The six headless phone fixtures are EXIF orientation 1. All eight orientation transforms and
+  auto/manual/engine decisions are Node unit-tested, but rotated/mirrored WeChat images have not
+  been visually verified. Auto detects engine-applied EXIF 5–8 by swapped dimensions; EXIF 2–4
+  remain manual and require the real-device checklist in `docs/ORIENTATION.md`. Browser Canvas2D
+  downsampling is shared conceptually with the app, but it is not the WeChat native decoder/resizer.
 - The Canvas2D renderer fallback is intentionally only a stub that throws `not implemented`. It is
   selected solely when WebGL context creation fails; there is no CPU LUT fallback.
 - Only bounded, display-referred 8-bit JPEG/PNG input is accepted by the preview. WeChat may
