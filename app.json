@@ -2,6 +2,12 @@
   "pages": [
     "pages/index/index"
   ],
+  "subpackages": [
+    {
+      "root": "subpackages/luts",
+      "name": "luts"
+    }
+  ],
   "window": {
     "navigationBarTitleText": "wx-spektrafilm",
     "navigationBarBackgroundColor": "#1a1a1a",

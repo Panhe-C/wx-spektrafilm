@@ -1,3 +1,4 @@
 {
-  "navigationBarTitleText": "wx-spektrafilm"
+  "navigationBarTitleText": "wx-spektrafilm",
+  "disableScroll": true
 }

@@ -79,3 +79,33 @@ synthetic colour/gradient target at no more than 1.2 MP each. It measures LUT fi
 physical **non-spatial, non-stochastic** `simulate()` path, not perceptual equivalence to a real
 film photograph and not accuracy against a laboratory film scan. The six phone JPEGs and large
 references remain on the build box; they are not committed to the Mini Program package.
+
+## Renderer and host limitations
+
+- Phase 2/3 rendering is verified in headless Google Chrome using ANGLE/SwiftShader. That compares
+  the shared GLSL and texture path with `tools/lut_apply.py`; it is **not** a WeChat DevTools or
+  physical-device certification. WebGL context creation, `canvas.createImage`, offscreen Canvas2D,
+  `wx.loadSubpackage`, touch/slider behaviour, and real GPU rounding still need target-device tests.
+- The fragment shader requests high precision where available and has a mediump fallback for WebGL1
+  compatibility. A mediump-only GPU can have different interpolation/rounding error and must not be
+  assumed to inherit the headless highp measurements.
+- The six headless phone fixtures are EXIF orientation 1. All eight orientation transforms are
+  implemented and matrix-tested, but rotated/mirrored WeChat images have not been visually verified.
+  Browser Canvas2D downsampling is shared conceptually with the app, but it is not the WeChat native
+  decoder/resizer. See `docs/ORIENTATION.md`.
+- The Canvas2D renderer fallback is intentionally only a stub that throws `not implemented`. It is
+  selected solely when WebGL context creation fails; there is no CPU LUT fallback.
+- Only bounded, display-referred 8-bit JPEG/PNG input is accepted by the preview. WeChat may
+  transcode HEIC before the app sees it. HDR/wide-gamut/RAW input, colour-profile conversion, export,
+  and saving to the photo album remain outside this phase.
+- The first stock selection needs the network-loaded LUT subpackage. Previously decoded LUT images
+  are cached in page memory, but there is no persistent offline cache or package-update manager.
+- The roughly one-second mid-phone preview target is a documented engineering estimate. Headless
+  render milliseconds exclude JPEG decode, native subpackage download, app layout, and PNG export,
+  and cannot establish real-device latency.
+
+## Still deferred to later phases
+
+Grain, halation/scatter, diffusion, blur/sharpening, glare, export/save, preset UI polish, privacy
+review, and release work remain unimplemented. The current product is a picker and interactive LUT
+preview only.

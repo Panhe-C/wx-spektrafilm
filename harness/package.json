@@ -1,15 +1,14 @@
 {
-  "name": "harness",
+  "name": "wx-spektrafilm-harness",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "private": true,
+  "description": "Headless WebGL-versus-NumPy verification for wx-spektrafilm",
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node run.mjs",
+    "test:smoke": "node run.mjs --smoke"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
+  "license": "GPL-3.0-only",
   "dependencies": {
     "puppeteer-core": "^24.43.1"
   }

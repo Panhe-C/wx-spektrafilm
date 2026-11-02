@@ -16,15 +16,52 @@ The code in this repository is licensed under GPLv3 (see LICENSE).
 - Open the repo root in WeChat DevTools (微信开发者工具).
 - Use the built-in tourist appid (`touristappid`, already set in `project.config.json`),
   or import your own appid.
-- No npm build step is required; the Mini Program runs directly from source.
+- No npm build step is required for the Mini Program; it runs directly from source. If a canonical
+  `shaders/*.glsl` file changes, regenerate the committed WeChat module with
+  `python3 tools/embed_shaders.py`.
+
+## Pick and preview
+
+The index page supports album/camera selection, EXIF-upright bounded resizing, a contain/letterbox
+WebGL preview, all 11 stocks, intensity 0–100%, press-and-hold original comparison, and clear.
+The LUT asset subpackage is loaded lazily after the first pick and decoded LUTs are cached in
+memory. See `docs/RENDERER.md` and `docs/ORIENTATION.md` for implementation details and
+`docs/LIMITATIONS.md` for the real-device verification boundary.
+
+## Verification
+
+```sh
+# JSON/page/runtime-import/shader/package-size checks (no AppID required)
+python3 tools/check_miniprogram.py
+
+# Full 6-photo × 11-stock Chrome/SwiftShader versus NumPy comparison
+cd harness
+npm i
+npm test
+```
+
+The harness expects `/workspace/testphotos/p*.jpg`, Chrome at `/usr/bin/google-chrome`, and the
+Python scientific environment described in `docs/RENDERER.md`. It writes `harness/out/report.{json,md}`, per-pair
+shader/Python/diff PNGs, and `harness/out/contact-shader.jpg`. Outputs and test photos are not
+committed. A real AppID/private key would be needed for `miniprogram-ci`; static and headless
+checks do not replace WeChat DevTools or physical-device testing.
+
+The final on-box full run passed **66/66 pairs** and **11/11 intensity checks**. Worst pair mean
+ΔE2000 was **0.00052035**, worst max ΔE2000 was **1.21046424**, and median shader
+render/readback time was **9.90 ms** under SwiftShader. The generated `harness/out/report.md`
+contains the per-stock and per-photo tables. These are headless measurements, not phone timings.
 
 ## Layout
 
 - `app.js`, `app.json`, `app.wxss` — Mini Program entry
-- `pages/` — Mini Program pages
-- `tools/` — Python tooling for LUT baking (uses the venv at `/workspace/venv-sf`)
-- `assets/` — static assets (LUTs live in a subpackage, e.g. `subpackages/luts`, at runtime)
-- `docs/` — physical-recipe exploration, LUT format, limitations, validation, and previews
+- `pages/` — native picker and preview page
+- `utils/`, `renderer/` — shared WebGL renderer, generated GLSL module, photo preparation, fallback stub
+- `shaders/` — canonical WebGL1 GLSL sources shared with the headless harness
+- `subpackages/luts/` — lazily loaded tiled-grid PNG LUTs and manifest
+- `harness/` — Puppeteer/Chrome and NumPy numerical verification (not shipped in the app)
+- `tools/` — Python LUT tooling and static Mini Program checks (uses `/workspace/venv-sf`)
+- `assets/` — other static assets
+- `docs/` — format, renderer, orientation, exposure, limitations, validation, and previews
 
 ## Film LUT scope
 

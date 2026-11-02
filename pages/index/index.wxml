@@ -1,6 +1,92 @@
-<!-- pages/index/index.wxml -->
-<view class="container">
-  <view class="title">{{title}}</view>
-  <view class="subtitle">Film emulation for your photos</view>
-  <button class="choose-btn" bindtap="onChoosePhoto">Choose photo</button>
+<view class="page">
+  <view class="header">
+    <view class="title">SPEKTRAFILM</view>
+    <view class="subtitle">胶片色彩 · 本机 WebGL 预览</view>
+  </view>
+
+  <view wx:if="{{error}}" class="error-banner" role="alert">{{error}}</view>
+
+  <view
+    id="previewStage"
+    class="preview-stage {{hasPhoto ? 'has-photo' : 'empty-preview'}}"
+    bindtouchstart="onPreviewTouchStart"
+    bindtouchend="onPreviewTouchEnd"
+    bindtouchcancel="onPreviewTouchCancel"
+  >
+    <canvas
+      id="previewCanvas"
+      type="webgl"
+      class="preview-canvas"
+      style="{{canvasStyle}}"
+    ></canvas>
+
+    <view wx:if="{{!hasPhoto}}" class="empty-state">
+      <view class="empty-icon">▦</view>
+      <view class="empty-title">选择一张照片开始</view>
+      <view class="attribution">Film modeling powered by spektrafilm</view>
+    </view>
+
+    <view wx:if="{{busy && hasPhoto}}" class="loading-mask">
+      <view class="loading-spinner"></view>
+      <view class="loading-text">{{busyText}}</view>
+    </view>
+    <view wx:if="{{comparing}}" class="compare-badge">原始照片</view>
+  </view>
+
+  <view wx:if="{{hasPhoto}}" class="controls">
+    <scroll-view scroll-x enhanced show-scrollbar="{{false}}" class="stock-scroll">
+      <view class="stock-list">
+        <view
+          wx:for="{{stocks}}"
+          wx:key="id"
+          class="stock-item {{selectedStock === item.id ? 'stock-selected' : ''}}"
+          data-id="{{item.id}}"
+          bindtap="onStockTap"
+        >
+          <view class="stock-name">{{item.name}}</view>
+          <view class="stock-category">{{item.category}} · ISO {{item.iso}}</view>
+        </view>
+      </view>
+    </scroll-view>
+
+    <view class="intensity-row">
+      <text class="control-label">强度</text>
+      <slider
+        class="intensity-slider"
+        min="0"
+        max="1"
+        step="0.01"
+        value="{{intensity}}"
+        activeColor="#d6b98a"
+        backgroundColor="#444444"
+        block-color="#f2dfc0"
+        block-size="20"
+        bindchanging="onIntensityChanging"
+        bindchange="onIntensityChange"
+      />
+      <text class="intensity-value">{{intensityText}}</text>
+    </view>
+    <view class="hint">按住预览查看原图，松开恢复胶片效果</view>
+  </view>
+
+  <view wx:if="{{busy && !hasPhoto}}" class="initial-loading">
+    <view class="loading-spinner"></view>
+    <text>{{busyText}}</text>
+  </view>
+
+  <view class="actions">
+    <button
+      class="action-button primary-action"
+      disabled="{{!ready || busy}}"
+      data-source="album"
+      bindtap="onChoosePhoto"
+    >从相册选择</button>
+    <button
+      class="action-button"
+      disabled="{{!ready || busy}}"
+      data-source="camera"
+      bindtap="onChoosePhoto"
+    >拍照</button>
+    <button wx:if="{{hasPhoto}}" class="clear-button" bindtap="onClearPhoto">清除</button>
+  </view>
 </view>

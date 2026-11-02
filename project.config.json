@@ -3,6 +3,19 @@
   "compileType": "miniprogram",
   "libVersion": "latest",
   "miniprogramRoot": "./",
+  "packOptions": {
+    "ignore": [
+      { "type": "folder", "value": "build" },
+      { "type": "folder", "value": "docs" },
+      { "type": "folder", "value": "harness" },
+      { "type": "folder", "value": "shaders" },
+      { "type": "folder", "value": "tools" },
+      { "type": "file", "value": "AGENTS.md" },
+      { "type": "file", "value": "LICENSE" },
+      { "type": "file", "value": "PLAN.md" },
+      { "type": "file", "value": "README.md" }
+    ]
+  },
   "setting": {
     "urlCheck": false
   }

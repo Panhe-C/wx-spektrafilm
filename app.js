@@ -3,7 +3,7 @@
 
 App({
   onLaunch() {
-    // nothing to do yet (Phase 0 scaffold)
+    // LUTs are loaded lazily by pages/index after the first photo is chosen.
   },
   globalData: {},
 });
