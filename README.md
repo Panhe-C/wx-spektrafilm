@@ -38,7 +38,8 @@ memory. See `docs/RENDERER.md` and `docs/ORIENTATION.md` for implementation deta
   regenerated while a slider moves. If every export route fails, the card shows a coloured
   placeholder instead of a broken image.
 - **Adjustments panel**: 曝光 EV (−2…+2), 色温, 色调, 强度, and a collapsed 「后期微调（非胶片物理）」
-  group with 对比度 and 饱和度. One 「重置」 button restores all of them.
+  group with 对比度 (a multiplier of 0.7…1.4, identity at 0) and 饱和度. One 「重置」 button
+  restores all of them.
 - **Effects panel (「效果」)**: 颗粒 (grain), 光晕 (halation) and 暗角 (vignette). The grain and the
   halation are approximations whose constants are measured from spektrafilm's full `simulate()`
   pipeline; the vignette is explicitly non-physical. The panel has its own 「重置效果」 button, and
@@ -49,6 +50,24 @@ memory. See `docs/RENDERER.md` and `docs/ORIENTATION.md` for implementation deta
   are approximations and that diffusion filters, glare and sharpening are still missing.
 - The page structure, the phase state machine, the thumbnail path and the real-device checklist
   are documented in `docs/UI.md`.
+
+## Full-resolution export
+
+The 「导出」 panel saves the picture with the current look at the original resolution:
+
+- the export size is `min(original long side, 4096 px, the GPU limits)`; the original file is
+  never modified;
+- the picture is rendered in tiles, so the grain, the halation and the vignette are continuous
+  across the tile borders — the tiled render is verified against a single-pass render in the
+  harness (maximum difference: 1 code);
+- the stages (解码 / 渲染 n/m / 编码 / 保存) are shown with a progress bar and a cancel button;
+- the album permission (`scope.writePhotosAlbum`) is requested before the expensive work, and a
+  refused permission opens the settings with an explanation;
+- the result is a JPEG (quality 0.92) in the system photo album.
+
+`docs/EXPORT.md` documents the pipeline, the tile planner, the permission flow and the memory
+budget. `docs/RELEASE_TODO.md` lists what a release still needs (real AppID, privacy
+authorisation, review materials, device tests).
 
 ## Adjustments (physics and model)
 
@@ -106,31 +125,38 @@ npm run study:effects
 The harness expects `/workspace/testphotos/p*.jpg`, Chrome at `/usr/bin/google-chrome`, and the
 Python scientific environment described in `docs/RENDERER.md`. It runs the orientation policy and
 matrix unit tests, the adjustment-mapping unit tests, the UI-state unit tests, the effect-model unit
-tests, and the page-wiring tests before launching Chrome. It writes `harness/out/report.{json,md}`, per-pair shader/Python/diff PNGs, per-adjustment
+tests, the export unit tests (the planner and the permission flow with a mock `wx`) and the
+page-wiring tests before launching Chrome. It writes `harness/out/report.{json,md}`, per-pair shader/Python/diff PNGs, per-adjustment
 PNGs, thumbnails, `harness/out/contact-{shader,adjust,thumbs}.jpg`, and — from the spatial-effect
 suite — `harness/out/contact-effects.jpg`, `harness/out/grain-compare.jpg` and
-`harness/out/effects-report.{json,md}`. Outputs and test photos
+`harness/out/effects-report.{json,md}`, and — from the export suite —
+`harness/out/export/*.png`. Outputs and test photos
 are not committed. A real AppID/private key would be needed for `miniprogram-ci`; static and
 headless checks do not replace WeChat DevTools or physical-device testing.
 
 The final on-box full run passed **66/66 default pairs**, **11/11 intensity checks**, **61/61
 adjustment pairs**, and **11/11 thumbnails**. Worst default mean ΔE2000 was **0.00052035**, worst
 default maximum **1.21046424**, worst adjustment mean **0.00044731**, and worst adjustment maximum
-**1.22417927**. Median render/readback was **18.55 ms**, median thumbnail setLut+render+readback
-**1.20 ms**, and median full-preview stock switch **18.20 ms**. The generated `harness/out/report.md`
+**1.20630550**. Median render/readback was **30.9 ms**, median thumbnail setLut+render+readback
+**1.20 ms**, and median full-preview stock switch **23.9 ms**. The generated `harness/out/report.md`
 contains the per-stock and per-photo tables. These are headless measurements, not phone timings.
+
+The effect suite (identity at strength 0, determinism, scale invariance, the NumPy mirror, the
+halation profile, the halation orientation) and the export suite (the tile planner, the album
+permission flow with a mock `wx`, and the tiled render versus the single-pass render at
+3000×2000 with every effect on — at most **1 code** of difference) are green as well.
 
 ## Layout
 
 - `app.js`, `app.json`, `app.wxss` — Mini Program entry
 - `pages/` — native picker, preset picker, adjustments panel and about page
-- `utils/`, `renderer/` — shared WebGL renderer, adjustment mapping, spatial-effect model, UI state policy, thumbnail export, generated GLSL module, photo preparation, fallback stub
+- `utils/`, `renderer/` — shared WebGL renderer, adjustment mapping, spatial-effect model, UI state policy, thumbnail export, generated GLSL module, photo preparation, export planner and WeChat export host, fallback stub
 - `shaders/` — canonical WebGL1 GLSL sources shared with the headless harness
 - `subpackages/luts/` — lazily loaded LUTs/manifest plus the required no-op subpackage page
 - `harness/` — Puppeteer/Chrome and NumPy numerical verification (not shipped in the app)
 - `tools/` — Python LUT tooling and static Mini Program checks (uses `/workspace/venv-sf`)
 - `assets/` — other static assets
-- `docs/` — format, renderer, adjustments, effects, UI, orientation, exposure, limitations, validation, and previews
+- `docs/` — format, renderer, adjustments, effects, export, UI, orientation, exposure, limitations, release checklist, validation, and previews
 
 ## Film LUT scope
 

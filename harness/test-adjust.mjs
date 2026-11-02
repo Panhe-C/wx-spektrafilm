@@ -60,4 +60,27 @@ for (const temperature of [-100, -50, 0, 50, 100]) {
   }
 }
 
-console.log('Adjustment mapping tests: PASS (identity, ranges, merge, CCT, Bradford, tint, Y normalization)');
+// The post-LUT contrast mapping: identity at 0, a multiplier of 0.7 at the
+// slider minimum and 1.4 at the maximum, and never a flat grey picture.
+close(adjust.contrastMultiplier(0), 1);
+close(adjust.contrastMultiplier(-1), adjust.CONTRAST_MULTIPLIER_MIN);
+close(adjust.contrastMultiplier(1), adjust.CONTRAST_MULTIPLIER_MAX);
+assert.equal(adjust.CONTRAST_MULTIPLIER_MIN, 0.7);
+assert.equal(adjust.CONTRAST_MULTIPLIER_MAX, 1.4);
+let previous = -Infinity;
+for (let contrast = -1; contrast <= 1.0001; contrast += 0.01) {
+  const multiplier = adjust.contrastMultiplier(contrast);
+  assert.ok(multiplier > previous, `contrast not monotonic at ${contrast}`);
+  assert.ok(multiplier >= 0.7 - 1e-9 && multiplier <= 1.4 + 1e-9);
+  previous = multiplier;
+}
+// The darkest picture the slider can produce still keeps its structure: the
+// black point moves to 0.15 and the white point to 0.85 instead of both
+// collapsing onto the 0.5 pivot.
+close(0.5 + (0 - 0.5) * adjust.contrastMultiplier(-1), 0.15);
+close(0.5 + (1 - 0.5) * adjust.contrastMultiplier(-1), 0.85);
+// At the maximum the extremes are clipped, which is the point of a boost.
+assert.ok(0.5 + (0 - 0.5) * adjust.contrastMultiplier(1) < 0);
+assert.ok(0.5 + (1 - 0.5) * adjust.contrastMultiplier(1) > 1);
+
+console.log('Adjustment mapping tests: PASS (identity, ranges, merge, CCT, Bradford, tint, Y normalization, contrast range)');

@@ -138,6 +138,8 @@
       imageFrameSize: gl.getUniformLocation(program, 'uImageFrameSize'),
       regionOrigin: gl.getUniformLocation(program, 'uRegionOrigin'),
       regionSize: gl.getUniformLocation(program, 'uRegionSize'),
+      imageUvOffset: gl.getUniformLocation(program, 'uImageUvOffset'),
+      imageUvScale: gl.getUniformLocation(program, 'uImageUvScale'),
       grainStrength: gl.getUniformLocation(program, 'uGrainStrength'),
       grainGrid: gl.getUniformLocation(program, 'uGrainGrid'),
       grainCurve: gl.getUniformLocation(program, 'uGrainCurve[0]'),
@@ -156,10 +158,8 @@
       blurSigma: gl.getUniformLocation(haloProgram, 'uBlurSigma'),
       sourceSize: gl.getUniformLocation(haloProgram, 'uSourceSize'),
       exposureScale: gl.getUniformLocation(haloProgram, 'uExposureScale'),
-      regionOrigin: gl.getUniformLocation(haloProgram, 'uRegionOrigin'),
-      regionSize: gl.getUniformLocation(haloProgram, 'uRegionSize'),
-      imageFrameOrigin: gl.getUniformLocation(haloProgram, 'uImageFrameOrigin'),
-      imageFrameSize: gl.getUniformLocation(haloProgram, 'uImageFrameSize'),
+      imageUvOffset: gl.getUniformLocation(haloProgram, 'uImageUvOffset'),
+      imageUvScale: gl.getUniformLocation(haloProgram, 'uImageUvScale'),
     } : null;
 
     // A missing uniform would silently disable a feature, so the renderer
@@ -360,26 +360,29 @@
     // The halation source is the linear camera exposure (sRGB decoded, camera
     // gain applied, two stops of headroom kept). It is blurred separably with
     // a nine-tap Gaussian whose sigma is the frame-relative physical sigma.
+    //
+    // The chain renders the *padded* region of the picture (the tile plus the
+    // halation margin), so that a tiled export is seamless: every pixel of
+    // the tile only sees real picture content inside the kernel support.
     function renderHaloChain(target, gain, sigmaPixels) {
       if (!haloProgram) {
         throw new Error('The halation shader source is required for the halation effect');
       }
       const width = target.haloWidth;
       const height = target.haloHeight;
+      const previousFramebuffer = gl.getParameter(gl.FRAMEBUFFER_BINDING);
       ensureHaloTargets(width, height);
       gl.useProgram(haloProgram);
       gl.uniform1i(haloUniforms.source, 0);
       gl.uniform3f(haloUniforms.linearGain, gain[0], gain[1], gain[2]);
       gl.uniform1f(haloUniforms.exposureScale, HALO_EXPOSURE_SCALE);
-      gl.uniform2f(haloUniforms.regionOrigin, target.regionOrigin[0], target.regionOrigin[1]);
-      gl.uniform2f(haloUniforms.regionSize, target.regionSize[0], target.regionSize[1]);
       gl.uniform2f(
-        haloUniforms.imageFrameOrigin,
-        target.imageFrameOrigin[0], target.imageFrameOrigin[1]
+        haloUniforms.imageUvOffset,
+        target.haloImageUvOffset[0], target.haloImageUvOffset[1]
       );
       gl.uniform2f(
-        haloUniforms.imageFrameSize,
-        target.imageFrameSize[0], target.imageFrameSize[1]
+        haloUniforms.imageUvScale,
+        target.haloImageUvScale[0], target.haloImageUvScale[1]
       );
 
       // 1. exposure pass: photo texture -> haloTextureA
@@ -410,7 +413,9 @@
       gl.uniform2f(haloUniforms.blurDirection, 0, 1);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      // Restore the framebuffer the caller had bound: the main pass may draw
+      // into an offscreen target (the tiled export) instead of the canvas.
+      gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer);
     }
 
     function defaultTarget(width, height) {
@@ -424,6 +429,10 @@
         regionSize: rect.size,
         imageFrameOrigin: rect.origin,
         imageFrameSize: rect.size,
+        imageUvOffset: [0, 0],
+        imageUvScale: [1, 1],
+        haloImageUvOffset: [0, 0],
+        haloImageUvScale: [1, 1],
         haloUvScale: [1, 1],
         haloUvOffset: [0, 0],
         longEdgePx: rect.longEdgePx,
@@ -485,11 +494,19 @@
       gl.uniform1f(uniforms.cameraIdentity, Adjustments.isCameraIdentity(adjustmentState) ? 1 : 0);
       gl.uniform3f(uniforms.linearGain, gain[0], gain[1], gain[2]);
       gl.uniform1f(uniforms.intensity, amount);
-      gl.uniform1f(uniforms.contrast, 1 + adjustmentState.contrast);
+      gl.uniform1f(uniforms.contrast, Adjustments.contrastMultiplier(adjustmentState.contrast));
       gl.uniform1f(uniforms.saturation, adjustmentState.saturation);
       gl.uniform1f(
         uniforms.postIdentity,
         adjustmentState.contrast === 0 && adjustmentState.saturation === 1 ? 1 : 0
+      );
+      gl.uniform2f(
+        uniforms.imageUvOffset,
+        target.imageUvOffset[0], target.imageUvOffset[1]
+      );
+      gl.uniform2f(
+        uniforms.imageUvScale,
+        target.imageUvScale[0], target.imageUvScale[1]
       );
       gl.uniform2f(
         uniforms.imageFrameOrigin,
@@ -520,6 +537,9 @@
       gl.uniform2f(uniforms.haloUvScale, target.haloUvScale[0], target.haloUvScale[1]);
       gl.uniform2f(uniforms.haloUvOffset, target.haloUvOffset[0], target.haloUvOffset[1]);
       gl.uniform1f(uniforms.vignetteStrength, vignetteStrength);
+      // The halation chain changed the viewport; the main pass always draws
+      // into the target rectangle.
+      gl.viewport(0, 0, target.width, target.height);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
 
@@ -566,14 +586,66 @@
 
     function renderToPixels(options) {
       const settings = options || {};
-      if (!hasPhoto || !lut) {
-        throw new Error('A photo and LUT are required for renderToPixels');
-      }
       const width = Math.round(Number(settings.width));
       const height = Math.round(Number(settings.height));
       if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) {
         throw new Error('Invalid offscreen render dimensions');
       }
+      return renderTargetToPixels({
+        width,
+        height,
+        target: defaultTarget(width, height),
+        intensity: settings.intensity,
+        adjustments: settings.adjustments,
+        effects: settings.effects,
+        flipY: settings.flipY,
+        onTiming: settings.onTiming,
+        kind: 'renderToPixels',
+      });
+    }
+
+    /**
+     * Render a sub-rectangle of the picture.
+     *
+     * The target describes the rectangle in the normalised frame space and
+     * the uv mapping of the photo texture, so the grain, the vignette and the
+     * halation stay continuous with the rest of the picture. This is the
+     * path the full-resolution export uses to render its tiles.
+     */
+    function renderRegionToPixels(options) {
+      const settings = options || {};
+      const width = Math.round(Number(settings.width));
+      const height = Math.round(Number(settings.height));
+      if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) {
+        throw new Error('Invalid region render dimensions');
+      }
+      const target = settings.target;
+      if (!target) {
+        throw new Error('A region target is required for renderRegionToPixels');
+      }
+      if (target.width !== width || target.height !== height) {
+        throw new Error('The region target does not match the requested size');
+      }
+      return renderTargetToPixels({
+        width,
+        height,
+        target,
+        intensity: settings.intensity,
+        adjustments: settings.adjustments,
+        effects: settings.effects,
+        flipY: settings.flipY,
+        onTiming: settings.onTiming,
+        kind: 'renderRegionToPixels',
+      });
+    }
+
+    function renderTargetToPixels(options) {
+      const settings = options || {};
+      if (!hasPhoto || !lut) {
+        throw new Error('A photo and LUT are required to render offscreen');
+      }
+      const width = settings.width;
+      const height = settings.height;
       const state = settings.adjustments === undefined
         ? adjustments
         : Adjustments.normalize(settings.adjustments);
@@ -585,7 +657,7 @@
       ensureTarget(width, height);
       gl.bindFramebuffer(gl.FRAMEBUFFER, targetFramebuffer);
       gl.viewport(0, 0, width, height);
-      draw(intensity, state, effectState, defaultTarget(width, height));
+      draw(intensity, state, effectState, settings.target);
       const submitted = now();
       gl.finish();
       const rendered = now();
@@ -612,9 +684,9 @@
         rowOrder: topDown ? 'top-down' : 'bottom-up',
         timing,
       };
-      const hook = settings.onTiming || options.onTiming;
+      const hook = settings.onTiming;
       if (hook) {
-        hook(Object.assign({ kind: 'renderToPixels' }, timing));
+        hook(Object.assign({ kind: settings.kind || 'renderToPixels' }, timing));
       }
       return result;
     }
@@ -665,6 +737,7 @@
       getEffects,
       render,
       renderToPixels,
+      renderRegionToPixels,
       clearPhoto,
       finish,
       destroy,

@@ -63,21 +63,36 @@
       renderer.maxTextureSize,
       longEdge || 1280
     );
+    return installPhoto(size.width, size.height);
+  }
+
+  // Load the picture at an exact size (the export test needs a fixed
+  // 3000x2000 canvas).
+  async function loadPhotoSized(photo, width, height) {
+    if (photoBitmap) {
+      photoBitmap.close();
+      photoBitmap = null;
+    }
+    photoBitmap = await decode(`/testphotos/${photo}.jpg`);
+    return installPhoto(width, height);
+  }
+
+  function installPhoto(width, height) {
     inputCanvas = document.createElement('canvas');
-    inputCanvas.width = size.width;
-    inputCanvas.height = size.height;
+    inputCanvas.width = width;
+    inputCanvas.height = height;
     const context = inputCanvas.getContext('2d', { alpha: false });
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = 'high';
-    context.drawImage(photoBitmap, 0, 0, size.width, size.height);
-    renderer.resize(size.width, size.height);
+    context.drawImage(photoBitmap, 0, 0, width, height);
+    renderer.resize(width, height);
     renderer.setPhoto(inputCanvas);
     renderer.setAdjustments(DEFAULTS);
     renderer.render(0);
     renderer.finish();
     return {
-      width: size.width,
-      height: size.height,
+      width: inputCanvas.width,
+      height: inputCanvas.height,
       sourceWidth: photoBitmap.width,
       sourceHeight: photoBitmap.height,
       dataUrl: inputCanvas.toDataURL('image/png'),
@@ -303,15 +318,211 @@
     };
   }
 
+  /**
+   * Render the picture in tiles, exactly like the export does: the plan
+   * comes from utils/export.js and every tile is rendered as a sub-rectangle
+   * of the same global picture.
+   */
+  async function renderTiled(id, width, height, options) {
+    const settings = options || {};
+    const state = { ...DEFAULTS, ...(settings.adjustments || {}) };
+    const effectState = { ...SpektrafilmEffects.EFFECT_DEFAULTS, ...(settings.effects || {}) };
+    const images = await cacheStock(id);
+    renderer.setLut(images.base, stockById(id), null);
+    renderer.setAdjustments(state);
+    renderer.setEffects(effectState);
+    const plan = SpektrafilmExport.planExport({
+      sourceWidth: width,
+      sourceHeight: height,
+      maxTextureSize: renderer.maxTextureSize,
+      maxLongEdge: 4096,
+      tileSize: settings.tileSize || 1024,
+      stockId: id,
+      halationStrength: effectState.halation,
+    });
+    const output = document.createElement('canvas');
+    output.width = plan.width;
+    output.height = plan.height;
+    const context = output.getContext('2d', { alpha: false });
+    const tiles = [];
+    const started = performance.now();
+    for (const tile of plan.tiles) {
+      const result = renderer.renderRegionToPixels({
+        width: tile.width,
+        height: tile.height,
+        target: tile.target,
+        intensity: settings.intensity === undefined ? 1 : settings.intensity,
+        adjustments: state,
+        effects: effectState,
+      });
+      const imageData = context.createImageData(tile.width, tile.height);
+      imageData.data.set(result.pixels);
+      context.putImageData(imageData, tile.x, tile.y);
+      tiles.push({
+        index: tile.index,
+        x: tile.x,
+        y: tile.y,
+        width: tile.width,
+        height: tile.height,
+        margin: tile.margin,
+        renderMs: result.timing.totalMs,
+      });
+    }
+    renderer.finish();
+    return {
+      plan: {
+        width: plan.width,
+        height: plan.height,
+        margin: plan.margin,
+        tileSize: plan.tileSize,
+        tileCount: plan.tiles.length,
+      },
+      tiles,
+      renderMs: performance.now() - started,
+      dataUrl: output.toDataURL('image/png'),
+    };
+  }
+
+  // The pixel-wise comparison of two canvases of the same size.
+  function compareCanvases(first, second) {
+    const width = first.width;
+    const height = first.height;
+    if (second.width !== width || second.height !== height) {
+      throw new Error('The two renders have different sizes');
+    }
+    const a = first.getContext('2d').getImageData(0, 0, width, height).data;
+    const b = second.getContext('2d').getImageData(0, 0, width, height).data;
+    let maxDiff = 0;
+    let sum = 0;
+    let differing = 0;
+    const columnMax = new Int32Array(width);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const offset = (y * width + x) * 4;
+        let pixelMax = 0;
+        for (let channel = 0; channel < 3; channel += 1) {
+          const difference = Math.abs(a[offset + channel] - b[offset + channel]);
+          sum += difference;
+          if (difference > pixelMax) {
+            pixelMax = difference;
+          }
+        }
+        if (pixelMax > 0) {
+          differing += 1;
+        }
+        if (pixelMax > maxDiff) {
+          maxDiff = pixelMax;
+        }
+        if (pixelMax > columnMax[x]) {
+          columnMax[x] = pixelMax;
+        }
+      }
+    }
+    return {
+      width,
+      height,
+      maxDiff,
+      meanDiff: sum / (width * height * 3),
+      differingPixels: differing,
+      columnMax: Array.from(columnMax),
+    };
+  }
+
+  /**
+   * Render the same picture in one pass and in tiles and compare the two
+   * results pixel by pixel. The comparison also reports the worst
+   * difference on the tile borders, which is where a seam would show up.
+   */
+  async function compareTiledVsSingle(id, width, height, options) {
+    const settings = options || {};
+    const state = { ...DEFAULTS, ...(settings.adjustments || {}) };
+    const effectState = { ...SpektrafilmEffects.EFFECT_DEFAULTS, ...(settings.effects || {}) };
+    const images = await cacheStock(id);
+    renderer.setLut(images.base, stockById(id), null);
+    renderer.setAdjustments(state);
+    renderer.setEffects(effectState);
+
+    const singleCanvas = document.createElement('canvas');
+    singleCanvas.width = width;
+    singleCanvas.height = height;
+    const singleStarted = performance.now();
+    const single = renderer.renderToPixels({
+      width,
+      height,
+      intensity: settings.intensity === undefined ? 1 : settings.intensity,
+      adjustments: state,
+      effects: effectState,
+    });
+    renderer.finish();
+    const singleMs = performance.now() - singleStarted;
+    const singleContext = singleCanvas.getContext('2d', { alpha: false });
+    const singleImage = singleContext.createImageData(width, height);
+    singleImage.data.set(single.pixels);
+    singleContext.putImageData(singleImage, 0, 0);
+
+    const tiled = await renderTiled(id, width, height, settings);
+    const tiledImage = await createImageBitmap(
+      await (await fetch(tiled.dataUrl)).blob()
+    );
+    const tiledCanvas = document.createElement('canvas');
+    tiledCanvas.width = width;
+    tiledCanvas.height = height;
+    const tiledContext = tiledCanvas.getContext('2d', { alpha: false });
+    tiledContext.drawImage(tiledImage, 0, 0);
+    tiledImage.close();
+
+    const comparison = compareCanvases(singleCanvas, tiledCanvas);
+    // The worst difference on the tile borders.
+    const borders = [];
+    tiled.tiles.forEach((tile) => {
+      if (tile.x > 0) {
+        borders.push(tile.x);
+      }
+      if (tile.y > 0) {
+        borders.push(tile.y);
+      }
+    });
+    const borderMax = [];
+    borders.forEach((border) => {
+      let worst = 0;
+      for (let offset = -1; offset <= 1; offset += 1) {
+        const column = border + offset;
+        if (column >= 0 && column < comparison.width) {
+          worst = Math.max(worst, comparison.columnMax[column]);
+        }
+      }
+      borderMax.push({ border, maxDiff: worst });
+    });
+    return {
+      stats: {
+        maxDiff: comparison.maxDiff,
+        meanDiff: comparison.meanDiff,
+        differingPixels: comparison.differingPixels,
+        pixels: comparison.width * comparison.height,
+      },
+      borders: borderMax,
+      tiles: tiled.tiles,
+      plan: tiled.plan,
+      singleRenderMs: singleMs,
+      tiledRenderMs: tiled.renderMs,
+      singleDataUrl: singleCanvas.toDataURL('image/png'),
+      tiledDataUrl: tiledCanvas.toDataURL('image/png'),
+    };
+  }
+
   window.spektrafilmHarness = {
     initialise,
     getRenderer() {
       return renderer;
     },
     loadPhoto,
+    loadPhotoSized,
     loadStock,
     render,
     renderSized,
+    renderTiled,
+    compareCanvases,
+    compareTiledVsSingle,
     setPhotoData,
     thumbnail,
     timeStockSwitch,

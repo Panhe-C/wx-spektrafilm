@@ -59,6 +59,14 @@ def write_markdown(report: dict) -> None:
     lines.append(
         f"| NumPy mirror of the shader grain | {'PASS' if mirror['pass'] else 'FAIL'} "
         f"| see the numbers below |")
+    if "halationOrientation" in report["checks"]:
+        orientation = report["checks"]["halationOrientation"]
+        lines.append(
+            f"| halation orientation (not mirrored) | "
+            f"{'PASS' if orientation['pass'] else 'FAIL'} "
+            f"| {orientation['nearPatch']:.4f} code near the bright patch, "
+            f"{orientation['mirroredPatch']:.4f} code at the mirrored corner "
+            f"(ratio {orientation['ratio']:.2f}) |")
     lines.append("")
 
     lines.append("## Grain statistics per output size")
@@ -136,7 +144,10 @@ def write_markdown(report: dict) -> None:
 
 
 def _crop(image: np.ndarray, x: int, y: int, size: int) -> Image.Image:
-    return Image.fromarray(image[y:y + size, x:x + size])
+    patch = image[y:y + size, x:x + size]
+    if patch.dtype != np.uint8:
+        patch = np.clip(patch, 0, 255).astype(np.uint8)
+    return Image.fromarray(patch)
 
 
 def write_contact_sheets(cases: dict) -> None:
@@ -178,25 +189,41 @@ def write_contact_effects(cases: dict) -> None:
 
 
 def write_grain_compare() -> None:
-    """A 1:1 crop of the physical grain next to the shader grain."""
-    physics_path = EFFECTS / "physics-grain.png"
+    """A 1:1 crop of the physical grain next to the shader grain.
+
+    Both panels show the *difference* between the grain-on and the grain-off
+    render of the same flat field (Portra 400, 1280x192). The shader grain is
+    scaled to the RMS of the physical grain, so that the two structures can be
+    compared directly whatever gain the reference file was written with.
+    """
+    physics_path = EFFECTS / "physics-grain-diff.png"
     shader_path = EFFECTS / "grain-compare-on.png"
     shader_off = EFFECTS / "grain-compare-off.png"
     if not physics_path.is_file() or not shader_path.is_file():
+        print("grain-compare.jpg: the physical reference is missing, sheet skipped")
         return
-    physics = load(physics_path)
+    physics = load(physics_path).astype(np.float64) - 128.0
     shader = load(shader_path).astype(np.float64)
     off = load(shader_off).astype(np.float64)
     grain = shader - off
+    physics_std = float(np.std(physics))
+    shader_std = float(np.std(grain))
+    gain = physics_std / max(shader_std, 1e-9)
     height, width = physics.shape[:2]
     crop = min(320, height, width)
     x = max(0, width // 2 - crop // 2)
     y = max(0, height // 2 - crop // 2)
-    tile = Image.new("RGB", (crop * 2 + 30, crop + 40), (17, 17, 17))
+    tile = Image.new("RGB", (crop * 2 + 30, crop + 76), (17, 17, 17))
     draw = ImageDraw.Draw(tile)
-    tile.paste(_crop(physics, x, y, crop), (10, 30))
-    tile.paste(_crop(np.clip(grain + 128, 0, 255).astype(np.uint8), x, y, crop),
-               (10 + crop + 10, 30))
-    label(draw, (12, 8),
-          "simulate() grain (physical)  |  shader grain, x4 gain (100 % crop)", 15)
+    tile.paste(_crop(np.clip(128.0 + physics, 0, 255), x, y, crop), (10, 26))
+    tile.paste(
+        _crop(np.clip(128.0 + grain * gain, 0, 255).astype(np.uint8), x, y, crop),
+        (10 + crop + 10, 26),
+    )
+    label(draw, (10, 6), "Portra 400 - flat field 1280x192 - grain difference", 13)
+    label(draw, (10, 26 + crop + 6), "left: simulate() (physical)    right: shader", 13)
+    label(draw, (10, 26 + crop + 24),
+          "std {:.2f} / {:.2f} code, gain x{:.1f}".format(physics_std, shader_std, gain), 12)
     tile.save(OUT / "grain-compare.jpg", quality=90)
+    print(f"grain-compare.jpg written (physical std {physics_std:.3f}, "
+          f"shader std {shader_std:.3f}, gain x{gain:.1f})")

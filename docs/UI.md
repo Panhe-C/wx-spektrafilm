@@ -21,6 +21,7 @@ scrollable body with three sections, and a pinned action bar.
 │   ├── 胶片预设             three category sections, cards with name / ISO / description / thumbnail
 │   ├── 调整                 曝光 EV, 色温, 色调, 强度, 后期微调（对比度, 饱和度）, 重置
 │   ├── 效果                 颗粒, 光晕, 暗角, 重置效果
+│   ├── 导出                 说明, 进度条 + 取消, 保存到相册
 │   └── 关于                 attribution, licence, version, effect-scope note
 └── .actions                从相册选择 / 拍照 / 清除  (+ safe-area padding)
 ```
@@ -56,7 +57,7 @@ are not measurements of the shipped cube and make no claim beyond that.
 | 色温 | −100 … +100 | 1 | camera white balance (Bradford adaptation) |
 | 色调 | −100 … +100 | 1 | camera white balance green/magenta axis |
 | 强度 | 0 … 1 | 0.01 | blend amount between original and LUT output |
-| 对比度 | −1 … +1 | 0.01 | **no** — display look only |
+| 对比度 | −1 … +1 | 0.01 | **no** — display look only (multiplier 0.7 … 1.4) |
 | 饱和度 | 0 … 2 | 0.05 | **no** — display look only |
 
 对比度 and 饱和度 live in a collapsed group titled 「后期微调（非胶片物理）」 so that the
@@ -66,6 +67,11 @@ stock, and it is disabled while everything is already at the default.
 
 Press-and-hold on the preview still shows the untouched original; the shader short-circuits at
 intensity 0, so the comparison is unaffected by any adjustment.
+
+The contrast slider maps `-1 … 1` onto a multiplier of **0.7 … 1.4** around the encoded 0.5 pivot
+(identity at 0). The slider minimum used to be a multiplier of 0, which flattened the whole
+picture to grey; the new minimum keeps the structure (black → 0.15, white → 0.85). The mapping
+lives in `utils/adjust.js::contrastMultiplier` and is documented in `docs/ADJUSTMENTS.md`.
 
 ### Effects panel (「效果」)
 
@@ -83,6 +89,29 @@ preset thumbnails do not include them.
 The effects are applied by the renderer, not by the page: the page owns the state, calls
 `renderer.setEffects()` and redraws, exactly like the adjustment sliders. The preset thumbnails are
 rendered with the effects switched off (`renderToPixels({ effects: … })`).
+
+## Export panel (「导出」)
+
+The export panel sits between the 「效果」 and the 「关于」 sections. It explains that the export
+uses the original resolution (long edge 4096 px, JPEG 92 %) and that the original photo is never
+modified, and it owns the 「保存到相册」 button.
+
+| state | what the panel shows |
+|---|---|
+| idle | the 「保存到相册」 button (disabled without a photo) |
+| running | the stage text (`解码原图 …`, `渲染 2/6…`, `编码 JPEG…`, `保存到相册…`), a progress bar and a 「取消」 button |
+| done | a toast: 「已保存到相册」, 「已取消保存」 or the reason of the failure |
+
+The button is disabled while an export runs, so a second export cannot start. The cancel button
+only sets the cancel flag; the export stops at the next tile boundary and releases its buffers.
+The pipeline, the permission flow and the tiling are documented in `docs/EXPORT.md`.
+
+## Share entries
+
+The page implements `onShareAppMessage()` (a title and the path `/pages/index/index`) and
+`onShareTimeline()` (a title), and `wx.showShareMenu({ menus: ['shareAppMessage',
+'shareTimeline'] })` is called in `onLoad`, so both entries appear in the platform menus. The
+share does not carry any user data.
 
 ## Phase state machine
 
@@ -196,8 +225,13 @@ references, including the thumbnail path and the stock-switch timing, followed b
 **spatial-effect suite** (`harness/test-effects.mjs`): determinism, the identity of the
 strength-0 path against `tools/lut_apply.py`, the scale invariance of the grain statistics, the
 agreement with the NumPy mirror of the grain maths, the halation radial profile against the
-physical study, the effect timing at 1280 px and the physical halation reference on a real
-photograph.
+physical study, the orientation of the halation (a bright patch in the top left corner must grow
+a halo around itself, not around its mirror image), the effect timing at 1280 px and the physical
+halation reference on a real photograph, followed by the **export suite**
+(`harness/test-export.mjs` and `harness/test-export-browser.mjs`): the export size caps, the
+tile plan (coverage, margins, gaps), the album permission flow with a mock `wx`, the
+orchestrator (stages, cancellation, release), and the comparison of a tiled render with a
+single-pass render at 3000×2000 with every effect switched on.
 
 `python3 tools/check_miniprogram.py` additionally checks that every WXML handler exists on the
 page, that the tags balance, that every `{{…}}` identifier resolves to page data or a `wx:for`
@@ -247,3 +281,12 @@ debug session). None of them is covered by the headless harness.
 17. **Effect performance** — dragging an effect slider stays smooth on a low-end phone. The
     halation needs three extra passes (exposure, horizontal blur, vertical blur) and the grain
     evaluates three noise fields per pixel; both are skipped entirely at strength 0.
+18. **Export** — 「保存到相册」 asks for the album permission (or explains it and opens the
+    settings), renders the picture with the current look and writes a JPEG into the album. The
+    progress text and the progress bar advance, 「取消」 stops the export, and the toast reports
+    the result. The saved file has the original resolution (long edge 4096 px or the GPU limit)
+    and looks like the preview.
+19. **Export memory** — a 12 MP photo must not crash the app on a low-end phone; watch the
+    memory peak and the time of the export.
+20. **Share** — the app message and the timeline entries appear in the platform menu and open the
+    index page.

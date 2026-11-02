@@ -225,6 +225,54 @@ def main() -> int:
         report["numbers"]["halationComparison"] = rows
         print(f"halation profile: {len(rows)} radii compared with the physics study")
 
+    # --- the halation must not be mirrored --------------------------------
+    # The bright patch sits in the top left corner. The halo has to grow
+    # around it; a vertical flip of the halo buffer would move the halo to
+    # the mirrored corner instead.
+    patch = cases["cases"].get("patch")
+    if patch:
+        patch_off = load(EFFECTS / patch["off"]).astype(np.float64)
+        patch_on = load(EFFECTS / patch["halation"]).astype(np.float64)
+        difference = np.abs(patch_on - patch_off)
+        box = patch["patch"]
+        height, width = difference.shape[:2]
+        # The halo grows *outside* the bright patch (the exposure inside it is
+        # clipped), so the measurement uses a thin band just above the top
+        # edge of the patch and the same band below the mirrored patch.
+        band = 14
+        near = difference[
+            max(0, box["y"] - band):max(1, box["y"] - 2),
+            box["x"]:box["x"] + box["size"],
+        ]
+        mirror_x = width - box["x"] - box["size"]
+        mirror_y = height - box["y"] - box["size"]
+        mirrored = difference[
+            mirror_y + 2:mirror_y + band,
+            mirror_x:mirror_x + box["size"],
+        ]
+        near_mean = float(near.mean()) if near.size else 0.0
+        mirrored_mean = float(mirrored.mean()) if mirrored.size else 0.0
+        # The floor keeps the ratio readable when the mirrored band is empty.
+        ratio = near_mean / max(mirrored_mean, 0.001)
+        report["numbers"]["halationOrientation"] = {
+            "nearPatch": near_mean,
+            "mirroredPatch": mirrored_mean,
+            "ratio": ratio,
+        }
+        report["checks"]["halationOrientation"] = {
+            "nearPatch": near_mean,
+            "mirroredPatch": mirrored_mean,
+            "ratio": ratio,
+            "pass": near_mean > 0.01 and ratio >= 3.0,
+        }
+        if not report["checks"]["halationOrientation"]["pass"]:
+            failures.append(
+                f"halation orientation: the halo above the bright patch is only "
+                f"{ratio:.2f}x stronger than above its mirror image"
+            )
+        print(f"halation orientation: {near_mean:.4f} code above the patch, "
+              f"{mirrored_mean:.4f} code above the mirrored patch (ratio {ratio:.2f})")
+
     # --- timings -----------------------------------------------------------
     report["numbers"]["timings"] = cases["cases"]["timings"]
 
@@ -328,6 +376,12 @@ def run_physics_grain() -> dict | None:
     PILImage.fromarray(
         np.clip(on * 255.0, 0, 255).astype(np.uint8)
     ).save(EFFECTS / "physics-grain.png")
+    # The isolated physical grain as a difference image around mid grey, for
+    # the 1:1 comparison sheet. The sheet scales the shader grain to the RMS
+    # of this image, so the gain of the reference file does not matter.
+    PILImage.fromarray(
+        np.clip(128.0 + delta, 0, 255).astype(np.uint8)
+    ).save(EFFECTS / "physics-grain-diff.png")
     statistics = grain_statistics(delta)
     print(f"physical grain: std {['%.4f' % v for v in statistics['std']]} "
           f"at output level {float(off[0, 0, 0] * 255):.2f}")

@@ -104,7 +104,14 @@ function decideExifOrientation(options) {
   };
 }
 
-async function preparePhoto(options) {
+/**
+ * Decode the picture and decide how it has to be rotated.
+ *
+ * The decision is the same for the preview and for the export: the EXIF
+ * policy lives in decideExifOrientation and must not depend on the output
+ * size.
+ */
+async function decodeOriented(options) {
   const info = await getImageInfo(options.src);
   const type = String(info.type || '').toLowerCase();
   if (type && ['jpg', 'jpeg', 'png'].indexOf(type) === -1) {
@@ -130,13 +137,15 @@ async function preparePhoto(options) {
     decodedHeight: sourceHeight,
     mode: options.orientationMode,
   });
-  const size = computePreviewSize(
-    decision.outputWidth,
-    decision.outputHeight,
-    options.devicePixelRatio,
-    options.maxTextureSize,
-    1280
-  );
+
+  return { info, source, sourceWidth, sourceHeight, decision };
+}
+
+/**
+ * Draw the decoded picture into an offscreen 2D canvas of the requested size,
+ * with the EXIF orientation applied.
+ */
+function drawOriented(decoded, size) {
   const output = wx.createOffscreenCanvas({
     type: '2d',
     width: size.width,
@@ -155,31 +164,57 @@ async function preparePhoto(options) {
     context.imageSmoothingQuality = 'high';
   }
   const transform = orientationTransform(
-    decision.transformOrientation, sourceWidth, sourceHeight
+    decoded.decision.transformOrientation, decoded.sourceWidth, decoded.sourceHeight
   );
   context.setTransform(...transform);
-  context.drawImage(source, 0, 0, sourceWidth, sourceHeight);
+  context.drawImage(decoded.source, 0, 0, decoded.sourceWidth, decoded.sourceHeight);
   context.setTransform(1, 0, 0, 1, 0, 0);
-  source.src = '';
+  decoded.source.src = '';
 
   return {
     canvas: output,
     width: size.width,
     height: size.height,
-    sourceWidth,
-    sourceHeight,
-    orientation: decision.orientation,
-    engineApplied: decision.engineApplied,
+    sourceWidth: decoded.sourceWidth,
+    sourceHeight: decoded.sourceHeight,
+    orientation: decoded.decision.orientation,
+    engineApplied: decoded.decision.engineApplied,
   };
+}
+
+async function preparePhoto(options) {
+  const decoded = await decodeOriented(options);
+  const size = computePreviewSize(
+    decoded.decision.outputWidth,
+    decoded.decision.outputHeight,
+    options.devicePixelRatio,
+    options.maxTextureSize,
+    1280
+  );
+  return drawOriented(decoded, size);
+}
+
+/**
+ * The export variant: the same orientation policy, but the picture is
+ * decoded into a canvas of the requested (full-resolution) size.
+ */
+async function prepareExportImage(options) {
+  const decoded = await decodeOriented(options);
+  const width = Math.max(1, Math.round(Number(options.width)));
+  const height = Math.max(1, Math.round(Number(options.height)));
+  return drawOriented(decoded, { width, height });
 }
 
 module.exports = {
   EXIF_ORIENTATION_MODE,
   decideExifOrientation,
+  decodeOriented,
+  drawOriented,
   getImageInfo,
   loadCanvasImage,
   normalizeOrientation,
   orientationTransform,
+  prepareExportImage,
   preparePhoto,
   swapsDimensions,
 };

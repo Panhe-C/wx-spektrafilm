@@ -40,6 +40,11 @@
   // Readout updates are throttled to this interval while a slider is dragged.
   const READOUT_INTERVAL_MS = 120;
 
+  // The post-LUT contrast slider (-1 .. 1) is mapped onto a multiplier of
+  // 0.7 .. 1.4 around the 0.5 pivot; the mapping itself lives in
+  // utils/adjust.js (contrastMultiplier), this is the range for the UI.
+  const CONTRAST_MULTIPLIER_RANGE = Object.freeze([0.7, 1.4]);
+
   // Long edge of a generated preset thumbnail, in CSS pixels.
   const THUMBNAIL_LONG_EDGE = 96;
 
@@ -284,6 +289,7 @@
     ADJUSTMENT_LIMITS,
     ADJUSTMENT_STEPS,
     ADJUSTMENT_KEYS,
+    CONTRAST_MULTIPLIER_RANGE,
     READOUT_INTERVAL_MS,
     THUMBNAIL_LONG_EDGE,
     CATEGORY_TITLES,

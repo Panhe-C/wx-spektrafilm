@@ -5,15 +5,17 @@
   "description": "Headless WebGL-versus-NumPy verification for wx-spektrafilm",
   "type": "module",
   "scripts": {
-    "test": "node test-orientation.mjs && node test-adjust.mjs && node test-ui-state.mjs && node test-effects-unit.mjs && node test-page.mjs && node run.mjs && node test-effects.mjs",
+    "test": "node test-orientation.mjs && node test-adjust.mjs && node test-ui-state.mjs && node test-effects-unit.mjs && node test-export.mjs && node test-page.mjs && node run.mjs && node test-effects.mjs && node test-export-browser.mjs",
     "test:orientation": "node test-orientation.mjs",
     "test:adjust": "node test-adjust.mjs",
     "test:ui": "node test-ui-state.mjs",
     "test:effects": "node test-effects-unit.mjs && node test-effects.mjs",
+    "test:export": "node test-export.mjs && node test-export-browser.mjs",
     "test:page": "node test-page.mjs",
     "test:smoke": "node test-adjust.mjs && node run.mjs --smoke",
     "study:ev": "cd .. && PYTHON=${PYTHON:-/workspace/venv-sf/bin/python} && $PYTHON tools/study_exposure_ev.py --resume && $PYTHON tools/study_white_balance.py --resume",
-    "study:effects": "cd .. && PYTHON=${PYTHON:-/workspace/venv-sf/bin/python} && $PYTHON tools/study_effects.py --resume && $PYTHON tools/derive_effects.py && $PYTHON tools/effects_tables.py --write"
+    "study:effects": "cd .. && PYTHON=${PYTHON:-/workspace/venv-sf/bin/python} && $PYTHON tools/study_effects.py --resume && $PYTHON tools/derive_effects.py && $PYTHON tools/effects_tables.py --write",
+    "effects:contact": "cd .. && PYTHON=${PYTHON:-/workspace/venv-sf/bin/python} && $PYTHON harness/effects_compare.py"
   },
   "license": "GPL-3.0-only",
   "dependencies": {

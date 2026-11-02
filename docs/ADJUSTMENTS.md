@@ -13,7 +13,7 @@ described in `docs/UI.md`.
 | Exposure EV | −2 … +2 | 0 | camera side, linear light, before the LUT | yes — `camera.exposure_compensation_ev` with fixed enlarger time |
 | Temperature | −100 … +100 | 0 | camera side, linear light, before the LUT | camera white balance (Bradford adaptation), not film chemistry |
 | Tint | −100 … +100 | 0 | camera side, linear light, before the LUT | camera white balance green/magenta axis |
-| Contrast | −1 … +1 | 0 | after the LUT, encoded sRGB | **no** — display look only |
+| Contrast | −1 … +1 | 0 | after the LUT, encoded sRGB | **no** — display look only (multiplier 0.7 … 1.4) |
 | Saturation | 0 … 2 | 1 | after the LUT, encoded sRGB | **no** — display look only |
 | Intensity | 0 … 1 | 1 | mix of original and LUT output | blend amount |
 
@@ -33,6 +33,21 @@ encoded sRGB input
 Contrast and saturation are applied **after** the intensity mix, so they affect the final colour
 that the user sees, and they are explicitly **not** part of the physical film emulation. The UI
 must label them 「后期微调（非胶片物理）」.
+
+### The contrast range
+
+The contrast slider maps `-1 … 1` onto a **multiplier of 0.7 … 1.4** around the encoded 0.5
+pivot, with the identity at 0:
+
+```js
+multiplier(contrast) = 1 + 0.35·contrast + 0.05·contrast²
+```
+
+The quadratic term keeps the mapping smooth at the neutral point. The old linear mapping
+(`1 + contrast`) reached 0 at the slider minimum and flattened the whole picture to grey; the new
+minimum keeps the structure: black moves to 0.15 and white to 0.85. The mapping lives in
+`utils/adjust.js::contrastMultiplier` and is used by the renderer, the harness and the unit tests
+(`harness/test-adjust.mjs`).
 
 Press-and-hold comparison (intensity 0) returns the untouched original even when EV, WB, contrast,
 and saturation are all nonidentity; the shader short-circuits before any adjustment is applied.

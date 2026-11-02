@@ -54,14 +54,47 @@ own full-pipeline comparison.
   for a cinema film, with the stock's `halation_strength`). The physical in-emulsion scatter term
   has a 9.3 µm decay constant — 0.34 px at the preview scale — and degenerates into a one-pixel
   ring whose amplitude depends on the sampling grid (85 codes at 1280 px, 130 codes at 2560 px).
-  It cannot be represented by a bilinear multi-tap kernel, so the shader shows about eight times
-  less halation energy (RMS) than the physical pipeline on a real photograph.
+  It cannot be represented by a bilinear multi-tap kernel, so the shader shows about nineteen times
+  less halation energy (RMS) than the physical pipeline on a real photograph (0.32 against 6.10 code
+  RMS for Portra 400 on the harness photograph).
 - The **vignette** has no physical counterpart and is labelled non-physical in the UI.
 - The preset thumbnails never include the effects, so a thumbnail shows the stock's colour look
   only.
 - The effects have only been verified in the headless SwiftShader harness; the framebuffer
   ping-pong used by the halation chain and the effect timing on a real device still need the
   device checklist in `docs/UI.md`.
+- The halation was **vertically mirrored** until Phase 5b: a render target has its row zero at
+  the bottom, while the photo texture has its row zero at the top. The exposure pass of the halo
+  chain now flips the vertical axis explicitly, and the harness has a regression test (a bright
+  patch in the top left corner must grow a halo around itself). The pre-5b renders in
+  `harness/out/` are therefore not comparable with the current ones.
+
+## The export
+
+The full-resolution export (`docs/EXPORT.md`) reproduces the preview look at the original
+resolution, but it is new code with a new risk profile:
+
+- The export size is `min(original long side, 4096 px, GPU limits)`. A 12 MP photo is therefore
+  **not** exported at 12 MP on most devices; the result is a 4096 px JPEG.
+- The export is the most memory-hungry operation of the app: at 4096×2731 the photo texture, the
+  assembly canvas and the two halo buffers need roughly 135 MB. The buffers are released
+  afterwards, but the **peak on a real device has not been measured**.
+- The picture is decoded and drawn into a 2D canvas before it is rendered. On a device whose
+  `wx.createOffscreenCanvas({ type: 'webgl' })` is missing or broken the export cannot run at
+  all; the app reports this instead of failing silently.
+- `wx.canvasToTempFilePath` with an offscreen canvas depends on the base library version. The
+  export therefore has a fallback chain (`canvasToTempFilePath` → `toDataURL` → a base64 file in
+  `USER_DATA_PATH`); on an old base library the export may fail with 「无法编码导出的图片」.
+- The tiled render is verified against a single-pass render in the headless harness (maximum
+  difference 1 code, the 8-bit rounding of the halo buffer). The framebuffer sizes, the tile
+  boundaries and the memory behaviour on a **real GPU** have not been checked.
+- The album permission flow is unit-tested with a mock `wx`; the real modal, the real
+  `wx.openSetting` and the iOS/Android differences are untested.
+- The export uses the picture that was picked; the picker may have returned a compressed copy
+  (`sizeType`), so the exported resolution can be lower than the resolution of the file in the
+  album.
+- The saved JPEG is 8-bit and quality 0.92; the file size is typically 2…5 MB for a 4096 px
+  export.
 
 ## Exposure, EV, and white balance
 
@@ -165,8 +198,9 @@ references remain on the build box; they are not committed to the Mini Program p
 - The Canvas2D renderer fallback is intentionally only a stub that throws `not implemented`. It is
   selected solely when WebGL context creation fails; there is no CPU LUT fallback.
 - Only bounded, display-referred 8-bit JPEG/PNG input is accepted by the preview. WeChat may
-  transcode HEIC before the app sees it. HDR/wide-gamut/RAW input, colour-profile conversion, export,
-  and saving to the photo album remain outside this phase.
+  transcode HEIC before the app sees it. HDR/wide-gamut/RAW input and colour-profile conversion
+  remain outside this phase. The export (Phase 5b) writes an 8-bit JPEG into the album; it does
+  not write HEIC, RAW or a colour profile.
 - The first stock selection needs the network-loaded LUT subpackage. Previously decoded LUT images
   are cached in page memory, but there is no persistent offline cache or package-update manager.
 - The roughly one-second mid-phone preview target is a documented engineering estimate. Headless
@@ -175,9 +209,11 @@ references remain on the build box; they are not committed to the Mini Program p
 
 ## Still deferred to later phases
 
-Diffusion filters, blur/sharpening, glare, export/save, privacy review, and release work remain
-unimplemented. The presets picker, the adjustments panel, the spatial-effect panel, and the about
-section are implemented (Phase 4b and 5a, `docs/UI.md`); the exposure, white-balance, and post-LUT
-controls are exposed in the UI and remain backed by the verified renderer API
-(`docs/ADJUSTMENTS.md`), and the grain, halation and vignette are exposed through
-`renderer.setEffects()` and documented in `docs/EFFECTS.md`.
+Diffusion filters, blur/sharpening, glare, privacy review, and release work remain unimplemented.
+The presets picker, the adjustments panel, the spatial-effect panel, the export panel and the
+about section are implemented (Phase 4b, 5a and 5b, `docs/UI.md`); the exposure, white-balance,
+and post-LUT controls are exposed in the UI and remain backed by the verified renderer API
+(`docs/ADJUSTMENTS.md`), the grain, halation and vignette are exposed through
+`renderer.setEffects()` and documented in `docs/EFFECTS.md`, and the full-resolution export is
+documented in `docs/EXPORT.md`. The release checklist (real AppID, privacy authorisation, review
+materials, device testing) is in `docs/RELEASE_TODO.md`.

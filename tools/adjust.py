@@ -52,11 +52,23 @@ def apply_lut_camera_gain(image: np.ndarray, png_path: str | Path,
     return apply_strip_lut_srgb_float(adjusted, png_path)
 
 
+def contrast_multiplier(contrast: float) -> float:
+    """The post-LUT contrast multiplier: 1 at 0, 0.7 at -1 and 1.4 at +1.
+
+    Mirrors utils/adjust.js::contrastMultiplier; the old linear mapping
+    (1 + contrast) reached 0 at the slider minimum and flattened the picture
+    to grey.
+    """
+    value = float(np.clip(contrast, -1.0, 1.0))
+    return 1.0 + 0.35 * value + 0.05 * value * value
+
+
 def post_adjust_srgb(graded: np.ndarray, contrast: float = 0.0,
                      saturation: float = 1.0) -> np.ndarray:
     """Contrast about encoded 0.5, then Rec.709 encoded-luma saturation."""
     value = np.asarray(graded, dtype=np.float32)
-    contrasted = np.float32(0.5) + (value - np.float32(0.5)) * np.float32(1.0 + contrast)
+    multiplier = np.float32(contrast_multiplier(contrast))
+    contrasted = np.float32(0.5) + (value - np.float32(0.5)) * multiplier
     luma = np.sum(contrasted * REC709_LUMA, axis=-1, keepdims=True, dtype=np.float32)
     saturated = luma + (contrasted - luma) * np.float32(saturation)
     return np.clip(saturated, 0.0, 1.0).astype(np.float32)

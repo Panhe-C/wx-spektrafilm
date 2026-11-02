@@ -184,7 +184,7 @@ async function main() {
     );
     for (const [name, effects] of Object.entries({
       off: NO_EFFECTS,
-      grain: { grain: 1, halation: 0, vignette: 0 },
+      on: { grain: 1, halation: 0, vignette: 0 },
     })) {
       const rendered = await page.evaluate(
         (id, state) => window.spektrafilmHarness.render(id, 1, {
@@ -197,6 +197,7 @@ async function main() {
     results.cases.grainCompare = {
       off: 'grain-compare-off.png',
       on: 'grain-compare-on.png',
+      /* the physics reference of the same field is written by effects_compare.py */
       width: 1280,
       height: 192,
     };
@@ -296,6 +297,47 @@ async function main() {
     );
     await writeDataUrl(path.join(OUT, 'disc-halation-gold200.png'), gold.dataUrl);
     results.cases.discGold200 = 'disc-halation-gold200.png';
+
+    // --- 7: the halation must not be mirrored ----------------------------
+    // A bright patch in the top left corner of a mid grey field: the halo
+    // has to grow around the patch, not around its mirror image in the bottom
+    // right corner. A vertical flip of the halo buffer would show up here.
+    // (The field is mid grey and not black, because the film LUT crushes the
+    // deep shadows, where a bloom of a few codes would be invisible.)
+    const patch = await page.evaluate(() => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 1280;
+      canvas.height = 640;
+      const context = canvas.getContext('2d', { alpha: false });
+      context.fillStyle = 'rgb(120,120,120)';
+      context.fillRect(0, 0, 1280, 640);
+      context.fillStyle = 'rgb(255,255,255)';
+      context.fillRect(180, 90, 220, 220);
+      return canvas.toDataURL('image/png');
+    });
+    await page.evaluate(
+      (dataUrl) => window.spektrafilmHarness.setPhotoData(dataUrl, 1280, 640),
+      patch
+    );
+    for (const [name, effects] of Object.entries({
+      off: NO_EFFECTS,
+      halation: { grain: 0, halation: 1, vignette: 0 },
+    })) {
+      const rendered = await page.evaluate(
+        (id, state) => window.spektrafilmHarness.render(id, 1, {
+          ev: 0, temperature: 0, tint: 0, contrast: 0, saturation: 1,
+        }, state),
+        'portra400', effects
+      );
+      await writeDataUrl(path.join(OUT, `patch-${name}.png`), rendered.dataUrl);
+    }
+    results.cases.patch = {
+      off: 'patch-off.png',
+      halation: 'patch-halation.png',
+      width: 1280,
+      height: 640,
+      patch: { x: 180, y: 90, size: 220 },
+    };
 
     await fs.writeFile(
       path.join(OUT, 'effects-cases.json'), `${JSON.stringify(results, null, 2)}\n`

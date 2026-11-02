@@ -32,6 +32,12 @@ uniform vec2 uImageFrameSize;
 uniform vec2 uRegionOrigin;
 uniform vec2 uRegionSize;
 
+// The photo texture is sampled through an explicit uv mapping. For the
+// preview it is the identity (offset 0, scale 1); for a tiled export it maps
+// the tile onto its part of the full-resolution picture.
+uniform vec2 uImageUvOffset;
+uniform vec2 uImageUvScale;
+
 // --- spatial effects (approximate, see docs/EFFECTS.md) --------------------
 uniform float uGrainStrength;
 uniform float uGrainGrid;        // grain lattice spacing in frame units
@@ -157,7 +163,8 @@ float grainCurveLookup(float level) {
 }
 
 void main() {
-  vec3 original = clamp(texture2D(uImage, vUv).rgb, 0.0, 1.0);
+  vec2 imageUv = uImageUvOffset + vUv * uImageUvScale;
+  vec3 original = clamp(texture2D(uImage, imageUv).rgb, 0.0, 1.0);
   float intensity = clamp(uIntensity, 0.0, 1.0);
   if (intensity <= 0.0) {
     // Hold-to-compare always returns the untouched original, even when the

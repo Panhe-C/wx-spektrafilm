@@ -364,6 +364,57 @@
   text-align: center;
 }
 
+.export-progress-box {
+  padding: 16rpx 0 4rpx;
+}
+
+.export-text {
+  color: #d6b98a;
+  font-size: 23rpx;
+}
+
+.export-bar {
+  height: 10rpx;
+  margin-top: 12rpx;
+  overflow: hidden;
+  border-radius: 5rpx;
+  background: #2b2b2b;
+}
+
+.export-bar-fill {
+  height: 100%;
+  border-radius: 5rpx;
+  background: #d6b98a;
+  transition: width 0.18s linear;
+}
+
+.export-cancel {
+  width: 100%;
+  margin: 16rpx 0 0;
+  border: 1px solid #4a4a4a;
+  border-radius: 12rpx;
+  background: #262626;
+  color: #e6e6e6;
+  font-size: 25rpx;
+  line-height: 72rpx;
+}
+
+.export-cancel::after {
+  border: 0;
+}
+
+.export-button {
+  border-color: #d6b98a;
+  background: #d6b98a;
+  color: #211c15;
+}
+
+.export-button[disabled] {
+  border-color: #333333;
+  background: #202020;
+  color: #6a6a6a;
+}
+
 .about-row {
   display: flex;
   padding: 8rpx 0;

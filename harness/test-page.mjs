@@ -236,6 +236,69 @@ assert.equal(instance.data.categories[0].stocks[2].thumb.status, 'failed');
 assert.equal(instance.data.categories[0].stocks[2].thumb.src, '');
 assert.ok(instance.data.categories[0].stocks[2].thumb.color.startsWith('hsl('));
 
+// --- the full-resolution export --------------------------------------------
+
+instance.setData({ hasPhoto: true });
+instance.photoSrc = 'wxfile://tmp_original.jpg';
+instance.activeStock = manifest[0];
+instance.lutManifest = manifest;
+instance.getLutImage = async () => ({ base: {}, extended: null });
+
+const exportCalls = [];
+instance.exportHostFactory = (options) => ({ options });
+instance.exportRunner = async (options) => {
+  exportCalls.push(options);
+  options.onProgress({ stage: 'decode', text: '解码原图 3000×2000…', progress: 10 });
+  options.onProgress({ stage: 'render', text: '渲染 1/2…', progress: 45 });
+  return { ok: true, filePath: 'wxfile://tmp_export.jpg', plan: { width: 3000, height: 2000 } };
+};
+const toasts = [];
+wx.showToast = (options) => toasts.push(options);
+
+await instance.onSaveTap();
+assert.equal(exportCalls.length, 1);
+assert.equal(exportCalls[0].src, 'wxfile://tmp_original.jpg');
+assert.equal(exportCalls[0].stockId, manifest[0].id);
+assert.equal(exportCalls[0].intensity, instance.adjustments.intensity);
+assert.deepEqual(exportCalls[0].effects, instance.effects);
+assert.equal(exportCalls[0].maxTextureSize, undefined);
+assert.equal(instance.data.exporting, false);
+assert.equal(instance.data.exportProgress, 0);
+assert.equal(toasts.length, 1);
+assert.equal(toasts[0].title, '已保存到相册');
+
+// The progress is written to the view while the export runs.
+let seenProgress = [];
+instance.exportRunner = async (options) => {
+  options.onProgress({ stage: 'render', text: '渲染 1/2…', progress: 45 });
+  seenProgress = instance.data.exportProgress;
+  return { ok: false, cancelled: true, message: '已取消保存。' };
+};
+await instance.onSaveTap();
+assert.equal(seenProgress, 45);
+assert.equal(toasts[toasts.length - 1].title, '已取消保存');
+
+// The cancel button stops the export.
+instance.exportRunner = async (options) => {
+  options.isCancelled();
+  return { ok: false, cancelled: true, message: '已取消保存。' };
+};
+instance.exportCancel = { cancelled: false };
+instance.onCancelExport();
+assert.equal(instance.exportCancel.cancelled, true);
+
+// A failed export reports the message of the pipeline.
+instance.exportRunner = async () => ({ ok: false, message: '请在设置中开启「保存到相册」权限后再试。' });
+await instance.onSaveTap();
+assert.ok(toasts[toasts.length - 1].title.indexOf('相册') !== -1);
+
+// The share entries.
+const share = instance.onShareAppMessage();
+assert.ok(share.title.length > 0);
+assert.equal(share.path, '/pages/index/index');
+const timeline = instance.onShareTimeline();
+assert.ok(timeline.title.length > 0);
+
 // --- every WXML handler exists on the page ---------------------------------
 
 const wxml = fs.readFileSync(path.join(ROOT, 'pages', 'index', 'index.wxml'), 'utf8');

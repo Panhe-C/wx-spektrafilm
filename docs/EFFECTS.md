@@ -141,6 +141,11 @@ tile borders.
 * **Bounded radius**: the halo kernel never reaches beyond `2·sigma`, so a tiled export needs a
   margin of `ceil(3·sigma) + 2` pixels (`Effects.halationMarginPixels`): 11 px at 1280 px and
   30 px at 4096 px.
+* **Row order**: the halo buffer is a render target, so its row zero is at the bottom, while the
+  photo texture has its row zero at the top. The exposure pass therefore flips the vertical axis
+  explicitly, so that both buffers use the same uv convention. Without the flip the halation was
+  mirrored vertically (in the preview and, in Phase 5b, inside every tile of an export); the
+  harness has a regression test for it.
 
 ### 3.4 Vignette
 
@@ -160,31 +165,34 @@ the scale has to be fixed: 27.344 µm per pixel).
 Physical grain standard deviation of the difference between a grain-on and a grain-off simulation
 of a flat field, in 8-bit output codes:
 
-| stock | output code | physical std R/G/B (code) | shader std R/G/B (code) |
+| stock | output code | physical std R/G/B (code) | shader model std R/G/B (code) |
 |---|---|---|---|
-| portra400 | 25.8 | 0.967 / 0.668 / 0.837 | 0.78 / 0.56 / 0.86 |
-| portra400 | 54.0 | 1.797 / 1.103 / 1.668 | 0.78 / 0.56 / 0.86 |
-| portra400 | 115.0 | 2.235 / 1.502 / 2.525 | 0.78 / 0.56 / 0.86 |
-| portra400 | 168.1 | 2.027 / 1.391 / 2.340 | 0.78 / 0.56 / 0.86 |
-| portra400 | 209.3 | 1.093 / 0.574 / 1.205 | 0.78 / 0.56 / 0.86 |
-| gold200 | 42.5 | 1.827 / 1.058 / 1.624 |
-| gold200 | 42.5 | 1.827 / 1.058 / 1.624 |
-| gold200 | 114.7 | 2.320 / 1.494 / 2.432 |
-| gold200 | 171.5 | 1.893 / 1.294 / 1.791 |
-| gold200 | 213.3 | 1.034 / 0.586 / 1.219 |
-| velvia100 | 19.7 | 0.614 / 0.413 / 0.531 |
-| velvia100 | 52.5 | 0.932 / 0.706 / 0.914 |
-| velvia100 | 117.7 | 1.061 / 0.935 / 1.352 |
-| velvia100 | 182.2 | 1.199 / 1.173 / 1.605 |
-| velvia100 | 213.9 | 0.973 / 0.812 / 1.498 |
-| vision3_500t | 19.2 | 1.403 / 0.942 / 1.667 |
-| vision3_500t | 47.5 | 2.199 / 1.398 / 2.537 |
-| vision3_500t | 113.2 | 2.538 / 1.604 / 2.569 |
-| vision3_500t | 165.9 | 2.043 / 1.464 / 2.081 |
-| vision3_500t | 210.8 | 1.036 / 0.718 / 1.300 |
+| portra400 | 25.8 | 0.967 / 0.668 / 0.837 | 0.877 / 0.589 / 0.991 |
+| portra400 | 54.0 | 1.797 / 1.103 / 1.668 | 1.586 / 1.066 / 1.791 |
+| portra400 | 115.0 | 2.235 / 1.502 / 2.525 | 2.220 / 1.492 / 2.508 |
+| portra400 | 168.1 | 2.027 / 1.391 / 2.340 | 2.023 / 1.359 / 2.285 |
+| portra400 | 209.3 | 1.093 / 0.574 / 1.205 | 1.076 / 0.723 / 1.215 |
+| gold200 | 42.5 | 1.827 / 1.058 / 1.624 | 1.620 / 1.043 / 1.698 |
+| gold200 | 77.9 | 2.408 / 1.445 / 2.437 | 2.325 / 1.497 / 2.437 |
+| gold200 | 114.7 | 2.320 / 1.494 / 2.432 | 2.300 / 1.481 / 2.410 |
+| gold200 | 171.5 | 1.893 / 1.294 / 1.791 | 1.852 / 1.193 / 1.941 |
+| gold200 | 213.3 | 1.034 / 0.586 / 1.219 | 1.085 / 0.698 / 1.137 |
+| velvia100 | 19.7 | 0.614 / 0.413 / 0.531 | 0.462 / 0.407 / 0.588 |
+| velvia100 | 52.5 | 0.932 / 0.706 / 0.914 | 0.802 / 0.707 / 1.022 |
+| velvia100 | 117.7 | 1.061 / 0.935 / 1.352 | 1.064 / 0.937 / 1.354 |
+| velvia100 | 182.2 | 1.199 / 1.173 / 1.605 | 1.239 / 1.092 / 1.578 |
+| velvia100 | 213.9 | 0.973 / 0.812 / 1.498 | 1.015 / 0.894 / 1.292 |
+| vision3_500t | 19.2 | 1.403 / 0.942 / 1.667 | 1.405 / 0.888 / 1.423 |
+| vision3_500t | 47.5 | 2.199 / 1.398 / 2.537 | 2.237 / 1.414 / 2.265 |
+| vision3_500t | 113.2 | 2.538 / 1.604 / 2.569 | 2.524 / 1.595 / 2.555 |
+| vision3_500t | 165.9 | 2.043 / 1.464 / 2.081 | 2.127 / 1.344 / 2.153 |
+| vision3_500t | 210.8 | 1.036 / 0.718 / 1.300 | 1.234 / 0.780 / 1.249 |
 
-The shader reproduces the mid-tone amplitude by construction: it uses the measured curve as its
-lookup table.
+The shader model reproduces the physical amplitude because its lookup table *is* the measured
+curve: the deviations in the table come from the simplification that one curve and one mid-tone
+channel ratio are used for all levels (the physical channel ratios change with the level, see
+divergence #4). The largest deviation in the table is 25 % (velvia100 in the deep shadows, where
+the absolute amplitude is 0.6 code); at the mid-tones the agreement is within 1 %.
 
 ### 4.2 Grain autocorrelation
 
@@ -228,7 +236,7 @@ A bright disc (radius 40 px = 1094 µm, value 1.0) on a dark background (value 0
 | 34 | 930 | -0.0536 / -0.0958 / -0.0689 | 0.0000 / 0.0000 / 0.0000 |
 | 36 | 984 | -0.0982 / -0.1091 / -0.0594 | 0.0000 / 0.0000 / 0.0000 |
 | 38 | 1039 | -0.6189 / -0.6024 / -0.4957 | -0.0156 / -0.0039 / 0.0078 |
-| 40 | 1094 | 85.5186 / 73.3205 / 63.4820 | 0.7797 / 0.2500 / 0.0254 |
+| 40 | 1094 | 85.5186 / 73.3205 / 63.4820 | 0.7839 / 0.2542 / 0.0254 |
 | 42 | 1148 | 0.2912 / 0.2679 / 0.3096 | 0.0000 / 0.0000 / 0.0000 |
 | 44 | 1203 | 0.0402 / 0.0386 / 0.0447 | 0.0000 / 0.0000 / 0.0000 |
 | 46 | 1258 | 0.0126 / 0.0126 / 0.0145 | 0.0000 / 0.0000 / 0.0000 |
@@ -251,11 +259,17 @@ photo (Portra 400, 1280×854).
 
 | quantity | physical | shader |
 |---|---|---|
-| rms difference (code) | 6.0988 | 0.7815 |
-| max difference (code) | 102.92 | 10.00 |
-| mean R/G/B difference (code) | 0.7427 / 0.5261 / 0.3944 | 0.1920 / 0.1395 / 0.1220 |
-| rms of (physical − shader) | 6.0304 | |
-| max of (physical − shader) | 100.92 | |
+| rms difference (code) | 6.0988 | 0.3200 |
+| max difference (code) | 102.92 | 8.00 |
+| mean R/G/B difference (code) | 0.7427 / 0.5261 / 0.3944 | 0.0726 / 0.0290 / 0.0114 |
+| rms of (physical − shader) | 5.9636 | |
+| max of (physical − shader) | 96.92 | |
+
+The shader's halo is close to the **back-reflection term alone** of the physical model (0.28
+code RMS, §4.5) and far below the physical total, which the in-emulsion scatter term dominates:
+with the halation correctly aligned with the picture, most of the bloom falls on the bright area
+itself, where the physical renormalisation cancels it, and only the part that spills into the
+neighbouring pixels survives.
 
 ### 4.4 Resolution dependence of the physical halation
 
@@ -294,7 +308,7 @@ resolution-independent kernel.
 | 2 | The physical grain is a sum of ~10³ particles per pixel; the shader uses a value-noise lattice. | The statistics (standard deviation, autocorrelation, channel correlation) are matched, the fine structure is not. |
 | 3 | The physical grain blur is a fixed **0.65 px**, i.e. resolution dependent. The shader uses a **frame-relative** lattice (1.60 px at 1280 px). | The preview and a 4096 px export show the same grain *relative to the picture*; a physical 4096 px simulation would show a grain ~3.2× finer relative to the frame. This is the deliberate "preview and export look alike" choice. |
 | 4 | The physical cross-channel grain correlation is level dependent (0.95 in the deep shadows, 0.2 in the mid-tones). The shader uses one mid-tone mixing matrix. | The grain is slightly too correlated in the deep shadows and slightly too decorrelated in the highlights. The absolute error there is below 0.1 code. |
-| 5 | The physical halation includes the in-emulsion scatter (an exponential kernel with a 9.3 µm decay constant), which is 0.34 px wide at the preview scale and degenerates into a one-pixel ring whose amplitude depends on the sampling grid (§4.4). The shader implements the back-reflection halo only. | The shader misses the one-pixel bright ring of the physical model and shows about eight times less halation energy (RMS) on a real photograph. The ring is a sampling artefact of the physical model rather than a resolvable physical feature, and a sub-pixel kernel cannot be represented by a bilinear multi-tap WebGL kernel. |
+| 5 | The physical halation includes the in-emulsion scatter (an exponential kernel with a 9.3 µm decay constant), which is 0.34 px wide at the preview scale and degenerates into a one-pixel ring whose amplitude depends on the sampling grid (§4.4). The shader implements the back-reflection halo only. | The shader misses the one-pixel bright ring of the physical model and shows about nineteen times less halation energy (RMS) on a real photograph (0.32 against 6.10 code RMS). The ring is a sampling artefact of the physical model rather than a resolvable physical feature, and a sub-pixel kernel cannot be represented by a bilinear multi-tap WebGL kernel. |
 | 6 | The physical halation is applied to the film raw, the shader to the linear scene exposure. | The relative strength of the halo in the deep shadows differs; the shader's halo is weaker. |
 | 7 | The physical halation kernel is the sum of three Gaussians truncated at infinity; the shader uses one Gaussian truncated at ±2 sigma. | 4.6 % of the kernel energy is missing. |
 | 8 | The vignette has no physical counterpart. | It is labelled non-physical in the UI. |
@@ -310,4 +324,12 @@ resolution-independent kernel.
 
 # the shader verification (writes harness/out/effects-report.{json,md} and the contact sheets)
 cd harness && node test-effects.mjs
+
+# only the contact sheets from the renders that are already there
+cd harness && npm run effects:contact
 ```
+
+The shader suite also checks the **orientation** of the halation: a bright patch in the top left
+corner of a mid grey field must grow a halo around itself (0.0275 code above the patch) and not
+around its mirror image in the bottom right corner (0.0000 code). The suite failed this check
+before the vertical flip of the halo buffer was found and fixed (see `docs/RENDERER.md`).

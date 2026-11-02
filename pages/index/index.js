@@ -6,6 +6,8 @@ const Effects = require('../../utils/effects.js');
 const ui = require('../../utils/ui-state.js');
 const thumbnails = require('../../utils/thumbnail.js');
 const appInfo = require('../../utils/app-info.js');
+const { createExportHost } = require('../../utils/export-wechat.js');
+const { exportImage } = require('../../utils/export.js');
 
 const DEFAULT_ADJUSTMENTS = ui.ADJUSTMENT_DEFAULTS;
 // The spatial effects are approximate. They are on by default at their
@@ -57,6 +59,9 @@ Page({
       vignette: '0%',
     },
     resetEnabled: false,
+    exporting: false,
+    exportText: '',
+    exportProgress: 0,
     version: appInfo.version,
     sourceUrl: appInfo.sourceUrl,
   },
@@ -70,6 +75,13 @@ Page({
     this.stockRequestId = 0;
     this.photoSize = null;
     this.photoId = 0;
+    this.photoSrc = '';
+    this.exporting = false;
+    this.exportCancel = null;
+    // The export pipeline and the host factory are seams, so that the page
+    // wiring can be unit-tested with a mock host.
+    this.exportRunner = exportImage;
+    this.exportHostFactory = createExportHost;
     this.adjustments = Object.assign({}, DEFAULT_ADJUSTMENTS);
     this.effects = Effects.normalize(APP_EFFECT_DEFAULTS);
     this.comparing = false;
@@ -89,6 +101,39 @@ Page({
     } catch (error) {
       this.devicePixelRatio = 1;
     }
+    this.enableShareMenu();
+  },
+
+  // The share entries are only reachable when the platform menu offers them.
+  enableShareMenu() {
+    if (typeof wx.showShareMenu !== 'function') {
+      return;
+    }
+    try {
+      wx.showShareMenu({ menus: ['shareAppMessage', 'shareTimeline'] });
+    } catch (error) {
+      // Older base libraries do not know the menus option; the default menu
+      // (shareAppMessage) still works.
+      try {
+        wx.showShareMenu();
+      } catch (fallbackError) {
+        // Nothing else to do: the share entries are optional.
+      }
+    }
+  },
+
+  onShareAppMessage() {
+    return {
+      title: '胶片模拟：基于 spektrafilm 物理流程的照片调色',
+      path: '/pages/index/index',
+    };
+  },
+
+  onShareTimeline() {
+    return {
+      title: '胶片模拟：基于 spektrafilm 物理流程的照片调色',
+      query: '',
+    };
   },
 
   onReady() {
@@ -249,6 +294,7 @@ Page({
         return;
       }
       this.photoSize = { width: prepared.width, height: prepared.height };
+      this.photoSrc = src;
       await new Promise((resolve) => {
         this.setData({ hasPhoto: true }, resolve);
       });
@@ -456,7 +502,7 @@ Page({
     }
   },
 
-  // The global reset restores the adjustments and the spatial effects.
+  // The effect panel's own reset restores the three effect sliders.
   onResetEffects() {
     this.effects = Effects.normalize(APP_EFFECT_DEFAULTS);
     if (this.renderer) {
@@ -471,6 +517,98 @@ Page({
     return ui.isDefaultState(this.adjustments) && Effects.EFFECT_KEYS.every(
       (key) => Number(this.effects[key]) === Number(APP_EFFECT_DEFAULTS[key])
     );
+  },
+
+  // --- full-resolution export ---------------------------------------------
+
+  /**
+   * Export the picture with the current look at the full resolution.
+   *
+   * The pipeline (utils/export.js) is host independent: the page only
+   * supplies the WeChat adapters and the current state. The export renders
+   * the picture in tiles, so the grain, the halation and the vignette stay
+   * seamless and the preview looks like the saved file.
+   */
+  async onSaveTap() {
+    if (this.exporting || !this.data.hasPhoto || !this.photoSrc || !this.activeStock) {
+      return;
+    }
+    const stock = this.activeStock;
+    this.exporting = true;
+    this.exportCancel = { cancelled: false };
+    this.setData({ exporting: true, exportText: '准备中…', exportProgress: 0 });
+    try {
+      const host = this.exportHostFactory({
+        canvas: this.canvas,
+        getStockLut: async (stockId, needExtended) => {
+          const entry = (this.lutManifest || []).find((item) => item.id === stockId);
+          if (!entry) {
+            throw new Error(`Unknown stock: ${stockId}`);
+          }
+          // A positive EV or a nonidentity white balance needs the extended
+          // cube, exactly like the preview.
+          const extended = needExtended === undefined
+            ? ui.needsExtendedLut(this.adjustments)
+            : needExtended;
+          const images = await this.getLutImage(entry, { needExtended: extended });
+          return { base: images.base, extended: images.extended, stock: entry };
+        },
+      });
+      const result = await this.exportRunner({
+        host,
+        src: this.photoSrc,
+        stockId: stock.id,
+        adjustments: this.adjustments,
+        effects: this.effects,
+        intensity: this.adjustments.intensity,
+        halationStrength: this.effects.halation,
+        maxTextureSize: this.renderer ? this.renderer.maxTextureSize : undefined,
+        onProgress: (progress) => {
+          this.setData({
+            exportText: progress.text,
+            exportProgress: progress.progress,
+          });
+        },
+        isCancelled: () => !!(this.exportCancel && this.exportCancel.cancelled),
+      });
+      if (result.cancelled) {
+        wx.showToast({ title: '已取消保存', icon: 'none' });
+      } else if (result.ok) {
+        wx.showToast({ title: '已保存到相册', icon: 'success' });
+      } else {
+        wx.showToast({ title: result.message || '保存失败，请重试', icon: 'none' });
+      }
+    } catch (error) {
+      wx.showToast({ title: this.describeExportError(error), icon: 'none' });
+    } finally {
+      this.exporting = false;
+      this.exportCancel = null;
+      this.setData({ exporting: false, exportText: '', exportProgress: 0 });
+    }
+  },
+
+  onCancelExport() {
+    if (this.exportCancel) {
+      this.exportCancel.cancelled = true;
+      this.setData({ exportText: '正在取消…' });
+    }
+  },
+
+  describeExportError(error) {
+    const message = String((error && (error.errMsg || error.message)) || '');
+    if (/offscreen/i.test(message)) {
+      return '此设备不支持离屏渲染，无法导出。';
+    }
+    if (/memory|out of range|allocat/i.test(message)) {
+      return '导出时内存不足，请关闭其他应用后重试。';
+    }
+    if (/auth|deny|permission/i.test(message)) {
+      return '没有相册权限，请在设置中允许保存到相册。';
+    }
+    if (/encode|编码/i.test(message)) {
+      return '导出图片编码失败，请重试。';
+    }
+    return '导出失败，请重试。';
   },
 
   scheduleReadouts() {
@@ -787,6 +925,7 @@ Page({
     this.operationId += 1;
     this.stockRequestId += 1;
     this.photoSize = null;
+    this.photoSrc = '';
     this.activeStock = null;
     this.comparing = false;
     this.resetThumbnails();

@@ -24,6 +24,15 @@
   const D65_KELVIN = 6504;
   const MIN_KELVIN = 3000;
   const MAX_KELVIN = 12000;
+  // The post-LUT contrast slider (-1 .. 1) is mapped onto a multiplier of
+  // 0.7 .. 1.4 around the 0.5 pivot. The old linear mapping (1 + contrast)
+  // reached 0 at the slider minimum, which produced a flat grey picture.
+  // The quadratic term keeps the identity at 0 and makes the mapping smooth
+  // at the neutral point.
+  const CONTRAST_MULTIPLIER_MIN = 0.7;
+  const CONTRAST_MULTIPLIER_MAX = 1.4;
+  const CONTRAST_MULTIPLIER_LINEAR = 0.35;
+  const CONTRAST_MULTIPLIER_QUADRATIC = 0.05;
   const TINT_STOPS_AT_100 = 0.5;
   const LUMA = [0.2126, 0.7152, 0.0722];
   const RGB_TO_XYZ = [
@@ -161,6 +170,16 @@
     };
   }
 
+  // Post-LUT contrast multiplier: 1 at the neutral point, 0.7 at the slider
+  // minimum and 1.4 at the maximum. Never reaches zero, so the picture keeps
+  // its structure at the extreme of the slider.
+  function contrastMultiplier(contrast) {
+    const value = clamp(contrast, LIMITS.contrast);
+    return 1 +
+      CONTRAST_MULTIPLIER_LINEAR * value +
+      CONTRAST_MULTIPLIER_QUADRATIC * value * value;
+  }
+
   function linearGain(adjustments, headroomEv) {
     const value = normalize(adjustments);
     const wb = whiteBalance(value.temperature, value.tint).gain;
@@ -179,12 +198,15 @@
     D65_KELVIN,
     MIN_KELVIN,
     MAX_KELVIN,
+    CONTRAST_MULTIPLIER_MIN,
+    CONTRAST_MULTIPLIER_MAX,
     LUMA,
     normalize,
     merge,
     temperatureToCct,
     cctToXy,
     whiteBalance,
+    contrastMultiplier,
     linearGain,
     isCameraIdentity,
   };

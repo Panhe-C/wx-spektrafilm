@@ -286,6 +286,30 @@
       </view>
 
       <view class="section">
+        <view class="section-header">
+          <text class="section-title">导出</text>
+          <text class="section-hint">原图分辨率</text>
+        </view>
+        <view class="section-body">
+          <view class="group-note">以原始分辨率导出当前胶片效果（最长边 4096 px，JPEG 92%）。原照片不会被修改，导出期间可随时取消。</view>
+          <view wx:if="{{exporting}}" class="export-progress-box">
+            <view class="export-text">{{exportText}}</view>
+            <view class="export-bar">
+              <view class="export-bar-fill" style="width: {{exportProgress}}%"></view>
+            </view>
+            <button class="export-cancel" bindtap="onCancelExport">取消</button>
+          </view>
+          <view class="panel-actions">
+            <button
+              class="reset-button export-button"
+              disabled="{{!hasPhoto || exporting}}"
+              bindtap="onSaveTap"
+            >保存到相册</button>
+          </view>
+        </view>
+      </view>
+
+      <view class="section">
         <view class="section-header section-header-tap" bindtap="onToggleAbout">
           <text class="section-title">关于</text>
           <text class="section-chevron">{{aboutOpen ? '收起' : '展开'}}</text>

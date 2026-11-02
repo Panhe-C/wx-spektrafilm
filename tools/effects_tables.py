@@ -8,6 +8,7 @@ study (build/p5a/effects-study.json) and the harness report
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -23,28 +24,73 @@ def load(path: Path):
     return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
 
 
+def parse_stock_constants() -> dict:
+    """Read the generated per-stock constants out of utils/effects.js."""
+    path = ROOT / "utils" / "effects.js"
+    if not path.is_file():
+        return {}
+    text = path.read_text(encoding="utf-8")
+    pattern = re.compile(
+        r"    (\w+): Object\.freeze\(\{\n"
+        r"      grain: Object\.freeze\(\{\n"
+        r"        curve: Object\.freeze\(\[([^\]]*)\]\),\n"
+        r"        matrix: Object\.freeze\(\[([^\]]*)\]\),",
+        re.MULTILINE,
+    )
+    constants = {}
+    for match in pattern.finditer(text):
+        stock = match.group(1)
+        curve = [float(value) for value in match.group(2).split(",")]
+        matrix = [float(value) for value in match.group(3).split(",")]
+        constants[stock] = {"curve": curve, "matrix": matrix}
+    return constants
+
+
+def curve_lookup(curve: list[float], level: float) -> float:
+    scaled = max(0.0, min(1.0, level / 255.0)) * (len(curve) - 1)
+    index = int(scaled)
+    index = min(index, len(curve) - 2) if len(curve) > 1 else 0
+    fraction = scaled - index
+    return curve[index] + (curve[index + 1] - curve[index]) * fraction
+
+
 def grain_table(physics: dict, stocks: list[str]) -> str:
     lines = [
-        "| stock | output code | physical std R/G/B (code) | shader std R/G/B (code) |",
+        "| stock | output code | physical std R/G/B (code) | shader model std R/G/B (code) |",
         "|---|---|---|---|",
     ]
-    report = load(REPORT)
-    shader = {}
-    if report:
-        mirror = report["numbers"].get("mirror", {})
-        shader["portra400"] = mirror.get("measured", {}).get("std")
+    constants = parse_stock_constants()
     for stock in stocks:
         rows = physics["grain"][stock]["levels"]
-        # The rows closest to a set of output codes.
+        entry = constants.get(stock)
+        norms = [1.0, 1.0, 1.0]
+        if entry:
+            matrix = entry["matrix"]
+            norms = [
+                float(np.linalg.norm(matrix[0:3])),
+                float(np.linalg.norm(matrix[3:6])),
+                float(np.linalg.norm(matrix[6:9])),
+            ]
+        used = set()
         for target in (30, 60, 118, 170, 210):
-            row = min(rows, key=lambda item: abs(item["output_codes"][0] - target))
-            shader_text = ""
-            if stock in shader and shader[stock]:
-                shader_text = " | " + " / ".join(f"{value:.2f}" for value in shader[stock])
+            index = min(
+                (i for i in range(len(rows)) if i not in used),
+                key=lambda i: abs(rows[i]["output_codes"][0] - target),
+            )
+            used.add(index)
+            row = rows[index]
+            level = float(np.mean(row["output_codes"]))
+            if entry:
+                amplitude = curve_lookup(entry["curve"], level)
+                shader = " / ".join(
+                    f"{amplitude * norms[channel]:.3f}" for channel in range(3)
+                )
+            else:
+                shader = "n/a"
             lines.append(
                 f"| {stock} | {row['output_codes'][0]:.1f} "
                 f"| {row['std_codes'][0]:.3f} / {row['std_codes'][1]:.3f} / {row['std_codes'][2]:.3f}"
-                f"{shader_text} |"
+                f" | {shader} |"
             )
     return "\n".join(lines)
 

@@ -68,11 +68,12 @@ The LUT uniforms are:
 | `uCameraIdentity` | 1 skips the sRGB↔linear round trip, keeping the Phase-3 output bit-identical |
 | `uLinearGain` | combined camera-side linear RGB gain (EV × white balance) |
 | `uIntensity` | Blend amount in `[0,1]`; 1 is the full film transform |
-| `uContrast` | Contrast slope about encoded 0.5 (`1 + contrast`) |
+| `uContrast` | Contrast slope about encoded 0.5 (`1 + 0.35·c + 0.05·c²`, see `docs/ADJUSTMENTS.md`) |
 | `uSaturation` | Rec.709 encoded-luma saturation multiplier |
 | `uPostIdentity` | 1 skips the non-physical contrast/saturation stage |
 | `uImageFrameOrigin` / `uImageFrameSize` | the picture's rectangle in the normalised frame space |
 | `uRegionOrigin` / `uRegionSize` | the rectangle this draw covers, in the same frame space |
+| `uImageUvOffset` / `uImageUvScale` | where the drawn rectangle sits on the photo texture |
 | `uGrainStrength` | grain strength 0…2 |
 | `uGrainGrid` | the grain lattice spacing in frame units |
 | `uGrainCurve` | 17-point grain amplitude versus output level (per stock) |
@@ -161,6 +162,20 @@ three-bounce sum, and it is truncated at ±2 sigma. The kernel therefore never r
 Everything that depends on position (the grain lattice, the vignette) is a function of the
 **global** frame position, so a tiled export (Phase 5b) stays continuous across the tile borders.
 The physical model, the measurements and the divergences are documented in `docs/EFFECTS.md`.
+
+The halo buffer is a **render target**, so its row zero is at the bottom, while the photo texture
+has its row zero at the top. The exposure pass therefore flips the vertical axis explicitly, so
+that both buffers use the same uv convention. Without the flip the halation was mirrored
+vertically in the preview and would have been mirrored inside every tile of an export.
+
+## Rendering a sub-rectangle (the export path)
+
+`renderer.renderRegionToPixels({ width, height, target, intensity, adjustments, effects })`
+renders a rectangle of the picture into the offscreen framebuffer and reads it back, exactly like
+`renderToPixels()`. The `target` describes the rectangle in the normalised frame space and the uv
+mappings of the photo and of the halo buffer; `utils/export.js::planExport` builds it. The
+preview path is the special case "the whole picture", so the two share one shader and one
+renderer. `docs/EXPORT.md` describes the tiling, the margins and the verification.
 
 ## Offscreen rendering and thumbnails
 

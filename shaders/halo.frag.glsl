@@ -16,10 +16,9 @@ precision mediump float;
 //                +/- 2 sigma and is resampled from the texture with the
 //                hardware bilinear filter.
 //
-// The region uniforms place the rendered rectangle in the normalised frame
-// space (the long edge of the picture is 1.0), so a tiled export can render
-// a padded sub-rectangle of the same global picture and get identical
-// results in the overlap.
+// The image uv uniforms place the rendered rectangle on the picture, so a
+// tiled export can render a padded sub-rectangle of the same global picture
+// and get identical results in the overlap.
 
 uniform sampler2D uSource;
 uniform float uMode;
@@ -28,10 +27,8 @@ uniform vec2 uBlurDirection;
 uniform float uBlurSigma;
 uniform vec2 uSourceSize;
 uniform float uExposureScale;
-uniform vec2 uRegionOrigin;
-uniform vec2 uRegionSize;
-uniform vec2 uImageFrameOrigin;
-uniform vec2 uImageFrameSize;
+uniform vec2 uImageUvOffset;
+uniform vec2 uImageUvScale;
 varying vec2 vUv;
 
 float srgbChannelToLinear(float value) {
@@ -50,8 +47,18 @@ vec3 srgbToLinear(vec3 value) {
 
 void main() {
   if (uMode < 0.5) {
-    vec2 framePos = uRegionOrigin + vUv * uRegionSize;
-    vec2 imageUv = (framePos - uImageFrameOrigin) / uImageFrameSize;
+    // The vertical axis is flipped on purpose. A render target has its row
+    // zero at the bottom, while the photo texture (an uploaded canvas) has
+    // its row zero at the top. Writing the exposure upside down would give
+    // the halo buffer the opposite row order of the picture, and the main
+    // pass would then read the halation mirrored: in the preview and, in a
+    // tiled export, inside every tile. With the flip both buffers use the
+    // same convention (row zero = the first row of the picture) and the
+    // halation stays aligned with the picture.
+    vec2 imageUv = vec2(
+      uImageUvOffset.x + vUv.x * uImageUvScale.x,
+      uImageUvOffset.y + (1.0 - vUv.y) * uImageUvScale.y
+    );
     vec3 encoded = clamp(texture2D(uSource, imageUv).rgb, 0.0, 1.0);
     vec3 exposure = srgbToLinear(encoded) * uLinearGain;
     gl_FragColor = vec4(clamp(exposure / uExposureScale, 0.0, 1.0), 1.0);
