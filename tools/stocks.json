@@ -1,0 +1,101 @@
+[
+  {
+    "id": "portra400",
+    "name": "Kodak Portra 400",
+    "film": "kodak_portra_400",
+    "print": "kodak_portra_endura",
+    "iso": 400,
+    "category": "colour negative",
+    "notes": "Portra Endura is the profile's declared target print and the natural Portra pairing. Full negative-to-print pipeline; global physical recipe only, with database neutral filters."
+  },
+  {
+    "id": "portra160",
+    "name": "Kodak Portra 160",
+    "film": "kodak_portra_160",
+    "print": "kodak_portra_endura",
+    "iso": 160,
+    "category": "colour negative",
+    "notes": "Portra Endura is the declared target and keeps the lower-speed Portra in the same measured film/paper family. Full negative-to-print pipeline; no per-stock exposure fit."
+  },
+  {
+    "id": "gold200",
+    "name": "Kodak Gold 200",
+    "film": "kodak_gold_200",
+    "print": "kodak_supra_endura",
+    "iso": 200,
+    "category": "colour negative",
+    "notes": "Supra Endura is the desktop application's default paper with Gold 200 and a sensible consumer-print pairing. Database neutral filters and the common TH-KG3 illuminant are retained."
+  },
+  {
+    "id": "ultramax400",
+    "name": "Kodak Ultramax 400",
+    "film": "kodak_ultramax_400",
+    "print": "kodak_supra_endura",
+    "iso": 400,
+    "category": "colour negative",
+    "notes": "Supra Endura matches the consumer Kodak negative workflow and the repository's Gold/Supra default. Full physical negative-to-print pipeline."
+  },
+  {
+    "id": "ektar100",
+    "name": "Kodak Ektar 100",
+    "film": "kodak_ektar_100",
+    "print": "kodak_ultra_endura",
+    "iso": 100,
+    "category": "colour negative",
+    "notes": "Ultra Endura is the saturated Ektar pairing selected for this project and has measured neutral filters for this film/paper combination. Its legitimately punchy tone is not retargeted."
+  },
+  {
+    "id": "velvia100",
+    "name": "Fujifilm Velvia 100",
+    "film": "fujifilm_velvia_100",
+    "print": "kodak_portra_endura",
+    "iso": 100,
+    "category": "slide (direct scan)",
+    "notes": "Positive stock uses spektrafilm's direct positive-film scan (io.scan_film=True), as in the GUI. Portra Endura is an inactive runtime-required placeholder; no paper print is simulated."
+  },
+  {
+    "id": "provia100f",
+    "name": "Fujifilm Provia 100F",
+    "film": "fujifilm_provia_100f",
+    "print": "kodak_portra_endura",
+    "iso": 100,
+    "category": "slide (direct scan)",
+    "notes": "Positive stock uses spektrafilm's direct positive-film scan (io.scan_film=True), as in the GUI. Portra Endura is an inactive runtime-required placeholder; no paper print is simulated."
+  },
+  {
+    "id": "kodachrome64",
+    "name": "Kodak Kodachrome 64",
+    "film": "kodak_kodachrome_64",
+    "print": "kodak_portra_endura",
+    "iso": 64,
+    "category": "slide (direct scan)",
+    "notes": "Positive stock uses spektrafilm's direct positive-film scan (io.scan_film=True), as in the GUI. Portra Endura is an inactive runtime-required placeholder; no paper print is simulated."
+  },
+  {
+    "id": "pro400h",
+    "name": "Fujifilm Pro 400H",
+    "film": "fujifilm_pro_400h",
+    "print": "fujifilm_crystal_archive_typeii",
+    "iso": 400,
+    "category": "colour negative",
+    "notes": "Crystal Archive Type II is the profile's declared target print and the appropriate Fuji negative/paper pairing. Full physical negative-to-print pipeline."
+  },
+  {
+    "id": "vision3_250d",
+    "name": "Kodak Vision3 250D",
+    "film": "kodak_vision3_250d",
+    "print": "kodak_2383",
+    "iso": 250,
+    "category": "cinema negative",
+    "notes": "Kodak 2383 is the Vision3 profile's declared target print and the standard cinema print pairing. Full physical negative-to-print pipeline."
+  },
+  {
+    "id": "vision3_500t",
+    "name": "Kodak Vision3 500T",
+    "film": "kodak_vision3_500t",
+    "print": "kodak_2383",
+    "iso": 500,
+    "category": "cinema negative",
+    "notes": "Kodak 2383 is the Vision3 profile's declared target print and the standard cinema print pairing. The tungsten-balanced film is used without an ad-hoc white-balance or tone transform."
+  }
+]

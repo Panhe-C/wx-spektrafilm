@@ -24,4 +24,20 @@ The code in this repository is licensed under GPLv3 (see LICENSE).
 - `pages/` — Mini Program pages
 - `tools/` — Python tooling for LUT baking (uses the venv at `/workspace/venv-sf`)
 - `assets/` — static assets (LUTs live in a subpackage, e.g. `subpackages/luts`, at runtime)
-- `docs/` — documentation
+- `docs/` — physical-recipe exploration, LUT format, limitations, validation, and previews
+
+## Film LUT scope
+
+The LUTs reproduce spektrafilm's deterministic physical colour pipeline for display-referred
+sRGB phone photos. Baking and validation use one shared parameter builder and one global recipe;
+there is no ad-hoc post-simulation tone or levels curve. See `docs/EXPOSURE.md` for the measured
+exposure choice and `docs/validation.md` for LUT-versus-full-`simulate()` fidelity.
+
+A static LUT excludes grain, halation/scatter, diffusion filters, lens/scan blur, glare, scanner
+unsharp masking, DIR-coupler spatial diffusion, and all other spatial or stochastic effects.
+Those effects are planned as separate later WebGL shaders (including grain, halation bloom, and
+vignette-like diffusion), not hidden inside the colour tables. `docs/LIMITATIONS.md` details this
+boundary and the exposure/tonality trade-offs.
+
+The tiled-grid PNG layout and shader half-texel/trilinear contract are in `docs/LUT_FORMAT.md`.
+Python regeneration instructions are in `tools/README.md`.

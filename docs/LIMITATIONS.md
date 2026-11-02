@@ -1,0 +1,74 @@
+# LUT limitations and excluded effects
+
+Film modeling powered by [spektrafilm](https://github.com/andreavolpato/spektrafilm).
+
+## What the LUT represents
+
+Each stock is a static, deterministic, per-pixel transform from display-referred 8-bit sRGB to
+sRGB. It includes spektrafilm's spectral filming/development, the selected physical print route
+(or direct positive-film scan), fixed camera/print exposure, database neutral filters, physical
+scanner endpoint normalization, and input/output gamut handling. The cube bake and full validation
+reference use exactly the same parameters. There is no project-owned tone, levels, per-channel
+neutralization, or post-simulation curve.
+
+## Spatial and stochastic effects excluded from the LUT
+
+A three-dimensional colour LUT cannot represent effects that depend on neighbouring pixels,
+image coordinates, film geometry, random samples, or whole-image statistics. The following are
+**disabled in both bake and reference and are not present in the delivered PNGs**:
+
+- film grain, sublayers, dye clouds, grain blur, and all stochastic grain structure;
+- halation/back-reflection and in-emulsion scatter, including highlight boost;
+- camera and enlarger diffusion filters and their halos/bloom;
+- camera-lens, enlarger-lens, scanner-lens, and scan blur;
+- scanner unsharp masking and any sharpening;
+- print/scan glare and other spatial veil or flare;
+- DIR-coupler **spatial** diffusion (the deterministic pointwise DIR-coupler colour chemistry
+  remains in the physical model);
+- cropping, rescaling, borders, and other geometric/presentation operations;
+- any other spatial, convolutional, coordinate-dependent, or stochastic effect.
+
+These are candidates for separate later WebGL passes: grain synthesis, halation/scatter bloom,
+diffusion filters and vignette-like diffusion, blur/sharpening, and glare. Adding them after the
+LUT will not make the current validation metrics apply to those future effects; each will need its
+own full-pipeline comparison.
+
+## Exposure and tonality constraints
+
+`camera.auto_exposure` is image-dependent and cannot be baked. The LUT instead uses one fixed
+−0.6522495 EV camera compensation, the median measured over six normal phone photos. It is not a
+per-image exposure guarantee. Print compensation/normalization remains physical and deterministic.
+The common camera EV has no print-stage counterbalance for direct positive scans, so Velvia,
+Provia, and Kodachrome are darker than their zero-EV variants; this is disclosed in
+`docs/EXPOSURE.md` rather than repaired with a slide-only fit.
+
+Physical scanner white/black normalization is enabled at spektrafilm's 0.98/0.01 levels. It does
+not bring input white to the soft ~240 goal for these stocks (roughly 200–225 in the exploration),
+and neutral casts remain where the measured film/paper profiles create them. Ektar and Vision3
+can legitimately be dark or punchy. Those are properties of the selected physical recipe, not LUT
+interpolation errors.
+
+## Colour, precision, and interpolation
+
+- Input is bounded, display-referred **sRGB**, not scene-linear RAW, HDR, Display P3, or log video.
+  Out-of-range/HDR input needs a separate colour-management and exposure pipeline.
+- The encoded sRGB domain is the shaper. A 3D LUT samples a continuous physical transform at
+  finite N nodes and uses trilinear interpolation; highly curved or discontinuous regions have
+  larger error. See per-image, subset, and N=33/49/65 measurements in `docs/validation.md`.
+- Nodes and final output are 8-bit. Quantization-only error is reported separately from physical
+  interpolation error. The WebGL implementation must use the tiled-grid half-texel rule and two
+  bilinear blue-slice fetches to avoid slice-boundary bleeding.
+- Spektrafilm's CAM16-UCS output gamut/lightness compression is part of both paths. Any residual
+  floating-point excursion beyond `[0,1]` is clipped at the cube/display boundary; pre-clip node
+  percentages are reported. Results are not a promise to reproduce an unclipped wide-gamut master.
+- The fixed 8-bit sRGB validation boundary intentionally includes JPEG/code-value inputs. It does
+  not test phone HDR pipelines, 16-bit masters, alternate illuminants, creative filter shifts, or
+  per-user chemistry/exposure controls.
+
+## Validation scope
+
+Validation covers six on-box phone photos, the ProPhoto-derived portrait, an IT8 chart, and a
+synthetic colour/gradient target at no more than 1.2 MP each. It measures LUT fidelity to the full
+physical **non-spatial, non-stochastic** `simulate()` path, not perceptual equivalence to a real
+film photograph and not accuracy against a laboratory film scan. The six phone JPEGs and large
+references remain on the build box; they are not committed to the Mini Program package.
