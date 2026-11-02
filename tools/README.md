@@ -49,8 +49,10 @@ python tools/convert_luts.py --manifest build/bake_manifest.json \
 ```
 
 The conversion is atomic: it rewrites the base PNGs, writes `<id>.ev2.png`, and merges a nested
-`extended` record into `luts.json` in one pass, then enforces the 1,200,000-byte Phase-4 subpackage
-budget. `tools/bake_luts.py --camera-ev` and `--fixed-print-exposure` produce reproducible
+`extended` record into `luts.json` and generates the equivalent CommonJS `luts.js` in one pass, then
+enforces the 1,200,000-byte Phase-4 LUT-directory budget. The directory name remains
+`subpackages/luts/`, but both manifests and all PNGs ship in the main package.
+`tools/bake_luts.py --camera-ev` and `--fixed-print-exposure` produce reproducible
 camera-EV variants for the candidate study; they are not used for the shipped assets.
 
 `run_all.sh` fills in the selected manifest automatically and copies it to `build/bake_manifest.json`.
@@ -147,7 +149,8 @@ The baker uses upstream `BundleBuilder` with a small override that records physi
 node statistics before its required `[0,1]` clamp. N=33, 49, and 65 are baked and converted.
 `tools/convert_luts.py` writes optimized, RGB-only PNGs without alpha/ICC/gAMA chunks. Blue slices
 are row-major in eight columns; `luts.json` stores `size`, `cols`, `rows`, `width`, `height`, and
-`bytes`. See `docs/LUT_FORMAT.md` for exact addressing and shader half-texel rules.
+`bytes`, and the generated `luts.js` exports the identical array for the Mini Program's local
+CommonJS require. See `docs/LUT_FORMAT.md` for exact addressing and shader half-texel rules.
 
 Validation reuses each full physical reference for all three N values. Completed stocks are
 checkpointed in `build/validation-stocks/`; `--resume` reuses those results, while
@@ -192,8 +195,9 @@ the WXML of each page has balanced tags, that every `bind*`/`catch*` handler exi
 that every `{{…}}` identifier resolves to page data or a `wx:for` alias, that element ids are
 unique inside a file, that `wx:for` lists declare a `wx:key` (warning), that no runtime file
 requires a Node builtin, that every relative `require` resolves to an existing file, that the
-embedded GLSL matches `shaders/*.glsl`, and that the main package stays below 2 MB and the LUT
-subpackage below 1,200,000 bytes. It also validates the PNG geometry and byte counts of every
-delivered LUT against `luts.json`.
+embedded GLSL matches `shaders/*.glsl`, that the generated `luts.js` and `luts.json` manifests match,
+and that the main package stays below 2 MB **including** `subpackages/luts/`. It reports the LUT
+folder's size separately, enforces its 1,200,000-byte asset budget, and validates the PNG geometry
+and byte counts of every delivered LUT against `luts.json`.
 
 `miniprogram-ci` is intentionally skipped: it needs a real AppID and a private key.

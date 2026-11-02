@@ -19,7 +19,10 @@ are zero-filled and are never sampled. Both PNG sides are below 2048 pixels for 
 | 65 | 8 | 9 | 520 × 585 |
 
 `luts.json` records `size`, `cols`, `rows`, `width`, `height`, `file`, and `bytes` for every stock,
-in addition to its film/print metadata. Use those values rather than inferring dimensions at runtime.
+in addition to its film/print metadata. `tools/convert_luts.py` also generates `luts.js`, a CommonJS
+module exporting the identical array for a local main-package require; the static checker verifies
+that the two generated manifests match. Use the recorded values rather than inferring dimensions at
+runtime.
 The selected shipping N and resolution study are in `docs/validation.md`.
 
 Each file is an **8-bit, three-channel RGB PNG**, with no alpha, ICC profile, or `gAMA` chunk. Values

@@ -27,8 +27,11 @@ generated string embedding. The adjustment mapping lives in `utils/adjust.js`, w
 load; the NumPy mirror used by the physical reference is `tools/wb.py`. There is no second copy of
 the lookup equations or of the slider mapping in the harness.
 
-The asset subpackage also declares the required no-op page `pages/empty/empty`; it is never
-navigated to and does not change the LUT manifest or PNG paths.
+The LUT PNGs and both manifest forms ship in the **main package** under `subpackages/luts/`; that
+directory name is retained only to keep image paths stable. `pages/index/index.js::ensureLuts()` uses a
+local synchronous `require('../../subpackages/luts/luts.js')` and does not call `wx.loadSubpackage`.
+`tools/convert_luts.py` generates `luts.js` for the Mini Program and the equivalent `luts.json` for the
+Python/browser harness from one manifest, and the static checker rejects stale or divergent output.
 
 ## Resize, upload, and draw
 
@@ -255,9 +258,10 @@ within one code. See `harness/out/report.md` for the full per-stock and per-pair
 For a typical 12 MP JPEG on a mid-range phone, the approximately one-second Phase-2 target is an
 **engineering estimate**, not a device measurement: JPEG decode/orientation inspection roughly
 150–400 ms, one-pass downscale roughly 80–250 ms, bounded texture upload roughly 20–80 ms, and a
-LUT draw roughly 10–30 ms, leaving margin within 1 s after warm-up. The first LUT use additionally
-depends on subpackage network latency. The harness proves the downscale/upload/draw and numerical
-path on the build box; only a physical-device profile can confirm this budget.
+LUT draw roughly 10–30 ms, leaving margin within 1 s after warm-up. LUT assets are already bundled in
+the main package, so first use has no subpackage download latency. The harness proves the
+downscale/upload/draw and numerical path on the build box; only a physical-device profile can confirm
+this budget.
 
 If WebGL context creation fails, the page deliberately selects `renderer/fallback2d.js`, which throws
 `not implemented`. Shader compile/link failures are reported rather than mislabeled as context

@@ -11,6 +11,7 @@ import numpy as np
 from PIL import Image
 from spektrafilm_lut_creator.formats import get_format
 
+from lut_manifest import write_manifest
 from pipeline_config import (
     BUILD_DIR,
     LUT_COLS,
@@ -121,11 +122,8 @@ def convert_manifest(manifest_path: Path, output_dir: Path, clean: bool = False,
             f"{geometry['width']}x{geometry['height']}, {geometry['bytes']:,} bytes",
             flush=True,
         )
-    manifest_path_out = output_dir / "luts.json"
-    manifest_path_out.write_text(
-        json.dumps(manifest, indent=2, allow_nan=False) + "\n", encoding="utf-8"
-    )
-    json.loads(manifest_path_out.read_text(encoding="utf-8"))
+    write_manifest(output_dir, manifest)
+    json.loads((output_dir / "luts.json").read_text(encoding="utf-8"))
     total = sum(path.stat().st_size for path in output_dir.iterdir() if path.is_file())
     result = {
         "resolution": int(bake["settings"]["resolution"]),
@@ -145,7 +143,7 @@ def convert_manifest(manifest_path: Path, output_dir: Path, clean: bool = False,
     size_limit = MAX_PHASE4_LUT_DIRECTORY_BYTES if extended_bake else MAX_LUT_DIRECTORY_BYTES
     if output_dir.resolve() == LUT_DIR.resolve() and total >= size_limit:
         raise RuntimeError(
-            f"LUT subpackage is {total:,} bytes; limit is {size_limit:,}"
+            f"LUT directory is {total:,} bytes; limit is {size_limit:,}"
         )
     return result
 

@@ -342,24 +342,16 @@ Page({
     if (this.lutManifest) {
       return Promise.resolve(this.lutManifest);
     }
-    return new Promise((resolve, reject) => {
-      wx.loadSubpackage({
-        name: 'luts',
-        success: () => {
-          try {
-            const manifest = require('../../subpackages/luts/luts.json');
-            if (!Array.isArray(manifest)) {
-              throw new Error('Invalid LUT manifest');
-            }
-            this.lutManifest = manifest;
-            resolve(manifest);
-          } catch (error) {
-            reject(error);
-          }
-        },
-        fail: reject,
-      });
-    });
+    try {
+      const manifest = require('../../subpackages/luts/luts.js');
+      if (!Array.isArray(manifest)) {
+        throw new Error('Invalid LUT manifest');
+      }
+      this.lutManifest = manifest;
+      return Promise.resolve(manifest);
+    } catch (error) {
+      return Promise.reject(error);
+    }
   },
 
   /**
@@ -966,23 +958,23 @@ Page({
   },
 
   describeError(error) {
+    console.error('[wx-spektrafilm]', error);
     const message = String((error && (error.errMsg || error.message)) || '');
+    const errMsg = String((error && (error.errMsg || error.message)) || '');
+    let friendly = '处理照片失败，请重试。';
     if (/cancel/i.test(message)) {
-      return '已取消选择。';
+      friendly = '已取消选择。';
+    } else if (/auth|deny|permission|authorize/i.test(message)) {
+      friendly = '无法访问照片或相机，请在设置中允许相应权限。';
+    } else if (error && error.code === 'UNSUPPORTED_TYPE') {
+      friendly = '不支持此照片格式，请选择 JPG 或 PNG。';
+    } else if (/loadSubpackage|subpackages[\\/]luts|luts\.js|LUT manifest/i.test(message)) {
+      friendly = '胶片资源加载失败，请重试。';
+    } else if ((error && error.code === 'DECODE_FAILED') || /getImageInfo|decode/i.test(message)) {
+      friendly = '照片解码失败，请尝试另一张 JPG 或 PNG。';
     }
-    if (/auth|deny|permission|authorize/i.test(message)) {
-      return '无法访问照片或相机，请在设置中允许相应权限。';
-    }
-    if (error && error.code === 'UNSUPPORTED_TYPE') {
-      return '不支持此照片格式，请选择 JPG 或 PNG。';
-    }
-    if (/loadSubpackage/i.test(message)) {
-      return '胶片资源下载失败，请检查网络后重试。';
-    }
-    if ((error && error.code === 'DECODE_FAILED') || /getImageInfo|decode/i.test(message)) {
-      return '照片解码失败，请尝试另一张 JPG 或 PNG。';
-    }
-    return '处理照片失败，请重试。';
+    const debug = errMsg ? `（调试：${errMsg.slice(0, 80)}）` : '';
+    return friendly + debug;
   },
 
   showError(message) {

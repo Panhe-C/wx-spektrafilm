@@ -15,7 +15,7 @@ scrollable body with three sections, and a pinned action bar.
 ```text
 .page  (flex column, 100vh)
 ├── .header                 SPEKTRAFILM / 胶片色彩 · 本机 WebGL 预览
-├── .error-banner           one-line failure message (conditional)
+├── .error-banner           friendly failure + truncated raw errMsg diagnostics (conditional)
 ├── .preview-stage          <canvas type="webgl"> + empty state + loading mask + compare badge
 ├── .body-scroll            <scroll-view scroll-y>
 │   ├── 胶片预设             three category sections, cards with name / ISO / description / thumbnail
@@ -122,7 +122,7 @@ share does not carry any user data.
 |---|---|---|
 | `empty` | no photo | no |
 | `decoding` | decoding, EXIF correction and downscaling | yes |
-| `loading-luts` | loading the LUT subpackage and the first stock | yes |
+| `loading-luts` | reading the local LUT manifest and loading the first stock | yes |
 | `ready` | preview and presets are usable | no |
 | `error` | the last operation failed; the message is in the banner | no |
 
@@ -236,7 +236,8 @@ single-pass render at 3000×2000 with every effect switched on.
 `python3 tools/check_miniprogram.py` additionally checks that every WXML handler exists on the
 page, that the tags balance, that every `{{…}}` identifier resolves to page data or a `wx:for`
 alias, that element ids are unique, that `wx:for` lists declare a `wx:key`, that every relative
-`require` resolves, and that both packages stay inside their size budgets.
+`require` resolves, that the generated JS/JSON LUT manifests match, and that the main package
+(including all LUT assets) stays below 2 MB.
 
 ## Real-device checklist
 
@@ -273,8 +274,8 @@ debug session). None of them is covered by the headless harness.
     appears, and the action bar clears the home indicator on notched phones.
 14. **Performance** — dragging a slider stays smooth on a low-end phone; the page must not
     re-render the preset list while a slider moves.
-15. **Package size** — the built package reports a main package below 2 MB and the LUT subpackage
-    below 1.2 MB.
+15. **Package size** — the built package reports a main package below 2 MB, including the LUT folder;
+    the checker also reports the LUT folder's separate contribution.
 16. **Effects panel** — 颗粒, 光晕 and 暗角 move the preview while the finger is down; the readouts
     follow; 「重置效果」 restores the three defaults; the global 「重置」 clears the adjustments and
     the effects together.

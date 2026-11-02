@@ -59,7 +59,8 @@ be executed by hand on real phones:
 - `python3 tools/embed_shaders.py --check` (the committed GLSL module is
   current);
 - the Mini Program package built by the WeChat DevTools: the main package
-  below 2 MB and the LUT subpackage below 1.2 MB;
+  below 2 MB, including all LUT assets (whose separate size is reported by
+  the static checker);
 - `miniprogram-ci` upload with the AppID and the private key (both are
   missing in the repository — the tool is intentionally skipped);
 - the version bump in `utils/app-info.js` and in the changelog.

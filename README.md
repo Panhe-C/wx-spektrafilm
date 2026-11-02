@@ -24,8 +24,10 @@ The code in this repository is licensed under GPLv3 (see LICENSE).
 
 The index page supports album/camera selection, EXIF-upright bounded resizing, a contain/letterbox
 WebGL preview, all 11 stocks, intensity 0–100%, press-and-hold original comparison, and clear.
-The LUT asset subpackage is loaded lazily after the first pick and decoded LUTs are cached in
-memory. See `docs/RENDERER.md` and `docs/ORIENTATION.md` for implementation details and
+The LUT PNGs and manifests ship in the **main package** under `subpackages/luts/` (the directory name is
+kept only for path stability). After the first pick, `ensureLuts()` loads the local CommonJS manifest
+synchronously; there is no `wx.loadSubpackage` step or LUT-package network dependency. Decoded LUTs
+are cached in memory. See `docs/RENDERER.md` and `docs/ORIENTATION.md` for implementation details and
 `docs/LIMITATIONS.md` for the real-device verification boundary.
 
 ## Presets and adjustments
@@ -152,7 +154,7 @@ permission flow with a mock `wx`, and the tiled render versus the single-pass re
 - `pages/` — native picker, preset picker, adjustments panel and about page
 - `utils/`, `renderer/` — shared WebGL renderer, adjustment mapping, spatial-effect model, UI state policy, thumbnail export, generated GLSL module, photo preparation, export planner and WeChat export host, fallback stub
 - `shaders/` — canonical WebGL1 GLSL sources shared with the headless harness
-- `subpackages/luts/` — lazily loaded LUTs/manifest plus the required no-op subpackage page
+- `subpackages/luts/` — main-package LUT PNGs plus generated, synchronized `luts.js` / `luts.json` manifests
 - `harness/` — Puppeteer/Chrome and NumPy numerical verification (not shipped in the app)
 - `tools/` — Python LUT tooling and static Mini Program checks (uses `/workspace/venv-sf`)
 - `assets/` — other static assets
@@ -173,7 +175,9 @@ unimplemented. `docs/LIMITATIONS.md` details this boundary and the exposure/tona
 
 The tiled-grid PNG layout and shader half-texel/trilinear contract are in `docs/LUT_FORMAT.md`.
 The shipped assets use **N=33** for the native look plus an **N=49** two-stop extended-range cube
-per stock, in **1038.5 KiB** total across 11 stocks (budget 1,200,000 bytes). Exact pixel-pooled
+per stock, in **1,069,130 bytes (1044.1 KiB)** for the complete LUT folder including both generated
+manifests (asset budget 1,200,000 bytes). These assets are included in the **1,233,647-byte
+(1204.7 KiB) main package**, below the 2 MiB limit. Exact pixel-pooled
 natural-image error versus full `simulate()` is **0.2829 mean / 0.6140 p95 / 0.8296 p99 /
 1.6896 maximum dE2000**; every stock passes the mean<1.0 and p95<3.0 criteria. The camera-side
 EV and white-balance paths measure **0.1479–0.1882 mean / 0.3219–0.3966 p95 dE2000** over the

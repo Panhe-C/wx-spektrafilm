@@ -9,10 +9,12 @@ from pathlib import Path
 
 from embed_shaders import DESTINATION as SHADER_DESTINATION
 from embed_shaders import generate as generate_shaders
+from lut_manifest import javascript_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 MAIN_PACKAGE_LIMIT = 2 * 1024 * 1024
-LUT_PACKAGE_LIMIT = 1_200_000
+LUT_DIRECTORY = Path("subpackages/luts")
+LUT_DIRECTORY_LIMIT = 1_200_000
 NODE_BUILTINS = {
     "assert", "async_hooks", "buffer", "child_process", "cluster", "console", "constants",
     "crypto", "dgram", "diagnostics_channel", "dns", "domain", "events", "fs", "http",
@@ -268,11 +270,11 @@ def main() -> int:
         return 1
 
     packages = app.get("subpackages", app.get("subPackages", []))
-    for package in packages:
-        if not isinstance(package.get("pages"), list) or not package["pages"]:
-            errors.append(f"Subpackage {package.get('root', '?')} must declare a nonempty pages list")
+    if any(package.get("root", "").strip("/") == LUT_DIRECTORY.as_posix()
+           for package in packages):
+        errors.append("LUT assets must ship in the main package, not as a declared subpackage")
 
-    # page_entries() prefixes each subpackage page with its root before these
+    # page_entries() prefixes any declared subpackage page with its root before
     # existence checks, so both main-package and subpackage pages are covered.
     pages = page_entries(app)
     for entry in pages:
@@ -302,6 +304,7 @@ def main() -> int:
     runtime_files = [ROOT / "app.js"]
     for directory in ("pages", "utils", "renderer"):
         runtime_files.extend((ROOT / directory).rglob("*.js"))
+    runtime_files.extend((ROOT / LUT_DIRECTORY).rglob("*.js"))
     for package in app.get("subpackages", app.get("subPackages", [])):
         runtime_files.extend((ROOT / package["root"]).rglob("*.js"))
     for path in runtime_files:
@@ -317,35 +320,37 @@ def main() -> int:
         errors.append("utils/shaders.js is stale; run python3 tools/embed_shaders.py")
 
     ignored_folders, ignored_files = package_ignores(project)
-    for package in app.get("subpackages", app.get("subPackages", [])):
+    for package in packages:
         root = package["root"].strip("/")
         ignored_folders.add(root)
+    if is_ignored(LUT_DIRECTORY, ignored_folders, ignored_files):
+        errors.append("The LUT directory must not be excluded from the main package")
     main_files = package_files(ROOT, ignored_folders, ignored_files)
     main_size = sum(path.stat().st_size for path in main_files)
     if main_size >= MAIN_PACKAGE_LIMIT:
         errors.append(f"Main package is {main_size} bytes; limit is < {MAIN_PACKAGE_LIMIT}")
 
-    lut_sizes = {}
-    for package in app.get("subpackages", app.get("subPackages", [])):
-        root = ROOT / package["root"]
-        size = sum(path.stat().st_size for path in package_files(root))
-        lut_sizes[package.get("name", package["root"])] = size
-        if package.get("name") == "luts":
-            if size >= LUT_PACKAGE_LIMIT:
-                errors.append(f"LUT subpackage is {size} bytes; limit is < {LUT_PACKAGE_LIMIT}")
-            try:
-                manifest = load_json(root / "luts.json")
-                check_png_geometry(manifest, root, errors)
-            except (OSError, json.JSONDecodeError) as error:
-                errors.append(f"LUT manifest: {error}")
+    lut_root = ROOT / LUT_DIRECTORY
+    lut_size = sum(path.stat().st_size for path in package_files(lut_root))
+    if lut_size >= LUT_DIRECTORY_LIMIT:
+        errors.append(f"LUT directory is {lut_size} bytes; limit is < {LUT_DIRECTORY_LIMIT}")
+    try:
+        manifest = load_json(lut_root / "luts.json")
+        check_png_geometry(manifest, lut_root, errors)
+        javascript_path = lut_root / "luts.js"
+        if (not javascript_path.is_file() or
+                javascript_path.read_text(encoding="utf-8") != javascript_manifest(manifest)):
+            errors.append("subpackages/luts/luts.js is stale; regenerate it with tools/convert_luts.py")
+    except (OSError, json.JSONDecodeError) as error:
+        errors.append(f"LUT manifest: {error}")
 
     print(f"JSON files parsed: {len(json_files)}")
     print(f"Page entries checked: {len(pages)}")
     for warning in WARNINGS:
         print(f"WARN: {warning}")
-    print(f"Main package: {main_size} bytes ({main_size / 1024:.1f} KiB), {len(main_files)} files")
-    for name, size in lut_sizes.items():
-        print(f"Subpackage {name}: {size} bytes ({size / 1024:.1f} KiB)")
+    print(f"Main package (including LUTs): {main_size} bytes "
+          f"({main_size / 1024:.1f} KiB), {len(main_files)} files")
+    print(f"LUT assets included above: {lut_size} bytes ({lut_size / 1024:.1f} KiB)")
     print("Shader embedding: current" if not errors else "Shader embedding: see errors")
     if errors:
         for error in errors:

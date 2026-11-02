@@ -23,7 +23,6 @@ globalThis.wx = {
       boundingClientRect: () => ({ exec: (callback) => callback([]) }),
     }),
   }),
-  loadSubpackage: () => {},
   // The offscreen canvas stub cannot export pixels, so the thumbnail path
   // exercises its documented placeholder fallback.
   createOffscreenCanvas: () => ({}),
@@ -213,6 +212,33 @@ assert.equal(instance.renderer.lastIntensity, 1);
 const manifest = JSON.parse(
   fs.readFileSync(path.join(ROOT, 'subpackages', 'luts', 'luts.json'), 'utf8')
 );
+
+// LUTs are local main-package assets: no wx.loadSubpackage host API is needed.
+const lutInstance = createInstance();
+const loadedManifest = await lutInstance.ensureLuts();
+assert.deepEqual(loadedManifest, manifest);
+assert.strictEqual(await lutInstance.ensureLuts(), loadedManifest);
+assert.strictEqual(loadedManifest, require('../subpackages/luts/luts.js'));
+
+// Device failures retain their friendly message and expose raw WeChat diagnostics.
+const loggedErrors = [];
+const originalConsoleError = console.error;
+console.error = (...args) => loggedErrors.push(args);
+let describedError;
+try {
+  describedError = instance.describeError({
+    errMsg: 'require:fail ../../subpackages/luts/luts.js not found',
+  });
+} finally {
+  console.error = originalConsoleError;
+}
+assert.equal(loggedErrors.length, 1);
+assert.equal(loggedErrors[0][0], '[wx-spektrafilm]');
+assert.ok(describedError.startsWith('胶片资源加载失败'));
+assert.ok(describedError.endsWith(
+  '（调试：require:fail ../../subpackages/luts/luts.js not found）'
+));
+
 const ui = require('../utils/ui-state.js');
 instance.setData({ categories: ui.groupStocks(manifest) });
 instance.setData({ selectedStock: 'portra400', selectedStockName: 'Kodak Portra 400' });

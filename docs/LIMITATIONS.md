@@ -171,7 +171,7 @@ references remain on the build box; they are not committed to the Mini Program p
   EV/WB/post adjustment pairs, and 11/11 thumbnails. It compares the shared GLSL and texture path
   with `tools/lut_apply.py` and the NumPy adjustment reference; it is **not** a WeChat DevTools or
   physical-device certification. WebGL context creation, `canvas.createImage`, offscreen Canvas2D,
-  `wx.loadSubpackage`, touch/slider behaviour, and real GPU rounding still need target-device tests.
+  touch/slider behaviour, and real GPU rounding still need target-device tests.
 - The pure UI policy (slider ranges and steps, readouts, category grouping, thumbnail geometry and
   ordering, the setData throttle, and the phase machine) is unit-tested in Node, and the phase
   machine is the only place that decides the busy mask. The *visual* result of that policy —
@@ -201,11 +201,12 @@ references remain on the build box; they are not committed to the Mini Program p
   transcode HEIC before the app sees it. HDR/wide-gamut/RAW input and colour-profile conversion
   remain outside this phase. The export (Phase 5b) writes an 8-bit JPEG into the album; it does
   not write HEIC, RAW or a colour profile.
-- The first stock selection needs the network-loaded LUT subpackage. Previously decoded LUT images
-  are cached in page memory, but there is no persistent offline cache or package-update manager.
+- LUT PNGs and the generated JS manifest ship in the main package; selecting the first stock does not
+  require a subpackage download. Previously decoded LUT images are cached in page memory, but there is
+  no persistent decoded-image cache or package-update manager.
 - The roughly one-second mid-phone preview target is a documented engineering estimate. Headless
-  render milliseconds exclude JPEG decode, native subpackage download, app layout, and PNG export,
-  and cannot establish real-device latency.
+  render milliseconds exclude JPEG decode, local PNG decode, app layout, and PNG export, and cannot
+  establish real-device latency.
 
 ## Still deferred to later phases
 
