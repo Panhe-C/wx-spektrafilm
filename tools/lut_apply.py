@@ -27,9 +27,8 @@ def _read_grid(png_path: str | Path, cols: int = DEFAULT_COLS) -> tuple[np.ndarr
     return grid, n, cols, rows
 
 
-def _coordinates(image: np.ndarray, n: int) -> tuple[np.ndarray, ...]:
-    rgb = image.astype(np.float32) * np.float32(1.0 / 255.0)
-    coordinates = rgb * np.float32(n - 1)
+def _coordinates(rgb: np.ndarray, n: int) -> tuple[np.ndarray, ...]:
+    coordinates = np.clip(rgb, 0.0, 1.0).astype(np.float32) * np.float32(n - 1)
     lower = np.floor(coordinates).astype(np.intp)
     fraction = coordinates - lower
     upper = np.minimum(lower + 1, n - 1)
@@ -39,9 +38,9 @@ def _coordinates(image: np.ndarray, n: int) -> tuple[np.ndarray, ...]:
     return r0, g0, b0, r1, g1, b1, fr, fg, fb
 
 
-def _trilinear(image: np.ndarray, n: int, vertex) -> np.ndarray:
-    """Chunked eight-vertex interpolation; vertex(b,g,r) returns RGB values."""
-    flat = image.reshape(-1, 3)
+def _trilinear_encoded(encoded: np.ndarray, n: int, vertex) -> np.ndarray:
+    """Chunked interpolation of float encoded-sRGB input in [0,1]."""
+    flat = encoded.reshape(-1, 3)
     output = np.empty(flat.shape, dtype=np.float32)
     for start in range(0, flat.shape[0], _CHUNK_PIXELS):
         stop = min(start + _CHUNK_PIXELS, flat.shape[0])
@@ -54,7 +53,7 @@ def _trilinear(image: np.ndarray, n: int, vertex) -> np.ndarray:
                     weight = (wb * wg * wr)[:, None]
                     accum += vertex(b_index, g_index, r_index).astype(np.float32) * weight
         output[start:stop] = accum
-    return output.reshape(image.shape)
+    return output.reshape(encoded.shape)
 
 
 def apply_cube_lut(img_uint8: np.ndarray, table: np.ndarray) -> np.ndarray:
@@ -68,7 +67,16 @@ def apply_cube_lut(img_uint8: np.ndarray, table: np.ndarray) -> np.ndarray:
     ):
         raise ValueError(f"table must have shape (N,N,N,3), got {table.shape}")
     n = table.shape[0]
-    return _trilinear(image, n, lambda b, g, r: table[b, g, r])
+    encoded = image.astype(np.float32) * np.float32(1.0 / 255.0)
+    return _trilinear_encoded(encoded, n, lambda b, g, r: table[b, g, r])
+
+
+def _grid_vertex(grid: np.ndarray, n: int, cols: int):
+    def vertex(b, g, r):
+        x = (b % cols) * n + r
+        y = (b // cols) * n + g
+        return grid[y, x].astype(np.float32) * np.float32(1.0 / 255.0)
+    return vertex
 
 
 def apply_strip_lut_float(img_uint8: np.ndarray, png_path: str | Path,
@@ -78,13 +86,19 @@ def apply_strip_lut_float(img_uint8: np.ndarray, png_path: str | Path,
     if image.dtype != np.uint8 or image.ndim < 2 or image.shape[-1] != 3:
         raise ValueError("img_uint8 must be a uint8 array with shape (..., 3)")
     grid, n, cols, _ = _read_grid(png_path, cols)
+    encoded = image.astype(np.float32) * np.float32(1.0 / 255.0)
+    return _trilinear_encoded(encoded, n, _grid_vertex(grid, n, cols))
 
-    def vertex(b, g, r):
-        x = (b % cols) * n + r
-        y = (b // cols) * n + g
-        return grid[y, x].astype(np.float32) * np.float32(1.0 / 255.0)
 
-    return _trilinear(image, n, vertex)
+def apply_strip_lut_srgb_float(image: np.ndarray, png_path: str | Path,
+                               cols: int = DEFAULT_COLS) -> np.ndarray:
+    """Lookup float encoded-sRGB RGB input, retaining fractional code values."""
+    encoded = np.asarray(image)
+    if encoded.ndim < 2 or encoded.shape[-1] != 3:
+        raise ValueError("image must have shape (..., 3)")
+    encoded = encoded.astype(np.float32)
+    grid, n, cols, _ = _read_grid(png_path, cols)
+    return _trilinear_encoded(encoded, n, _grid_vertex(grid, n, cols))
 
 
 def apply_strip_lut(img_uint8: np.ndarray, png_path: str | Path,
@@ -103,4 +117,7 @@ def apply_strip_lut(img_uint8: np.ndarray, png_path: str | Path,
     return np.rint(np.clip(output, 0.0, 1.0) * 255.0).astype(np.uint8)
 
 
-__all__ = ["apply_cube_lut", "apply_strip_lut", "apply_strip_lut_float"]
+__all__ = [
+    "apply_cube_lut", "apply_strip_lut", "apply_strip_lut_float",
+    "apply_strip_lut_srgb_float",
+]

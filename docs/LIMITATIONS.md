@@ -33,7 +33,7 @@ diffusion filters and vignette-like diffusion, blur/sharpening, and glare. Addin
 LUT will not make the current validation metrics apply to those future effects; each will need its
 own full-pipeline comparison.
 
-## Exposure and tonality constraints
+## Exposure, EV, and white balance
 
 `camera.auto_exposure` is image-dependent and cannot be baked. The LUT instead uses **0.0 EV**
 camera compensation globally: display sRGB code 118 decodes to approximately 0.18 linear metered
@@ -43,6 +43,28 @@ negative/print stocks, and without a print stage it made direct positive scans t
 keeps Velvia, Provia, and Kodachrome normally exposed without a slide-only exception. It is still
 not a per-image exposure guarantee. Print compensation/normalization remains physical and
 deterministic.
+
+The Phase-4a EV control is a **camera-side** exposure compensation with a fixed enlarger time
+(`print_exposure_compensation=False`). Auto-printing is not used: it cancels negative-film EV and
+has no effect at all for direct positive scans. Measured against full `simulate()`, the shipped
+implementation stays within mean 0.1479–0.1882 / p95 0.3219–0.3966 / max 1.6097 dE2000 over the
+whole −2…+2 EV range; see `docs/EXPOSURE_EV.md` for the candidate comparison and the auto-printing
+diagnostic.
+
+Positive EV needs linear headroom above diffuse white, which the native N=33 cube does not
+represent. Each stock therefore also ships an extended N=49 cube baked from the same physical
+recipe with two extra stops of input headroom. Consequences to keep in mind:
+
+- The extended cube is sampled over a wider input range, so its interpolation error is slightly
+  larger in the deep shadows than the base cube's; the −2 EV row (max 1.2721 dE2000) shows this.
+- The physical study covers four representative stocks (negative, saturated negative, slide,
+  cinema) on three photos; the shader-versus-NumPy harness covers all 11 stocks.
+- The white-balance study validates the ±50 slider region against full `simulate()`; the ±100
+  endpoints are covered by the unit tests and the available headroom, not by a full physical sweep.
+- White balance is a camera white balance (Bradford adaptation to a Planckian white), not a film
+  or print filter, and it is applied to the image before the film LUT.
+- Contrast and saturation are **not** physical. They are applied after the intensity mix and are
+  labelled 「后期微调（非胶片物理）」 in the UI.
 
 Physical scanner white/black normalization is enabled at spektrafilm's 0.98/0.01 levels. It does
 not bring input white to the soft ~240 goal for these stocks (roughly 206–225 in the zero-EV
@@ -82,10 +104,14 @@ references remain on the build box; they are not committed to the Mini Program p
 
 ## Renderer and host limitations
 
-- Phase 2/3 rendering is verified in headless Google Chrome using ANGLE/SwiftShader. That compares
-  the shared GLSL and texture path with `tools/lut_apply.py`; it is **not** a WeChat DevTools or
+- The final on-box full harness run passed 66/66 default pairs, 11/11 intensity checks, 61/61
+  EV/WB/post adjustment pairs, and 11/11 thumbnails. It compares the shared GLSL and texture path
+  with `tools/lut_apply.py` and the NumPy adjustment reference; it is **not** a WeChat DevTools or
   physical-device certification. WebGL context creation, `canvas.createImage`, offscreen Canvas2D,
   `wx.loadSubpackage`, touch/slider behaviour, and real GPU rounding still need target-device tests.
+- The offscreen `renderToPixels()` path used for thumbnails has been verified headlessly only. On a
+  real device the framebuffer readback path and the `putImageData`/temp-file conversion still need
+  a device test; the WeChat-specific thumbnail plumbing is Phase 4b.
 - The fragment shader requests high precision where available and has a mediump fallback for WebGL1
   compatibility. A mediump-only GPU can have different interpolation/rounding error and must not be
   assumed to inherit the headless highp measurements.
@@ -107,6 +133,7 @@ references remain on the build box; they are not committed to the Mini Program p
 
 ## Still deferred to later phases
 
-Grain, halation/scatter, diffusion, blur/sharpening, glare, export/save, preset UI polish, privacy
-review, and release work remain unimplemented. The current product is a picker and interactive LUT
-preview only.
+Grain, halation/scatter, diffusion, blur/sharpening, glare, export/save, the preset/adjustment UI,
+privacy review, and release work remain unimplemented. The current product is a picker and
+interactive LUT preview; the exposure, white-balance, and post-LUT controls exist as a verified
+renderer API (`docs/ADJUSTMENTS.md`) but are not yet exposed in the UI.

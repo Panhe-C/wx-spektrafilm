@@ -22,6 +22,7 @@ from pipeline_config import (
     load_stocks,
     make_bundle_spec,
     make_runtime_params,
+    recipe_config,
     recipe_snapshot,
 )
 
@@ -56,12 +57,13 @@ def _range_stats(encoded: np.ndarray, linear: np.ndarray) -> dict:
 class StockBundleBuilder(BundleBuilder):
     """Use the shared physical recipe and retain pre-clip edge diagnostics."""
 
-    def __init__(self, spec):
+    def __init__(self, spec, recipe: dict | None = None):
         super().__init__(spec)
+        self.recipe = recipe
         self.edge_stats: dict[str, dict] = {}
 
     def _make_pipeline(self, spec, in_entry, out_entry, print_stock):
-        return SimulationPipeline(make_runtime_params(spec, print_stock))
+        return SimulationPipeline(make_runtime_params(spec, print_stock, self.recipe))
 
     def _bake_sublut(
         self, pipeline, spec, inject_tap, collect_tap,
@@ -90,9 +92,12 @@ def _relative_or_absolute(path: Path) -> str:
         return str(path)
 
 
-def bake_stock(stock: dict, resolution: int, stops: float, out_root: Path) -> dict:
-    spec = make_bundle_spec(stock, resolution=resolution, stops_above_midgray=stops)
-    params = make_runtime_params(spec, stock["print"])
+def bake_stock(stock: dict, resolution: int, stops: float, out_root: Path,
+               recipe: dict | None = None) -> dict:
+    spec = make_bundle_spec(
+        stock, resolution=resolution, recipe=recipe, stops_above_midgray=stops,
+    )
+    params = make_runtime_params(spec, stock["print"], recipe)
     stock_parameters = {
         "scan_film": bool(params.io.scan_film),
         "camera_exposure_compensation_ev": float(params.camera.exposure_compensation_ev),
@@ -117,7 +122,7 @@ def bake_stock(stock: dict, resolution: int, stops: float, out_root: Path) -> di
     }
     del params
 
-    builder = StockBundleBuilder(spec)
+    builder = StockBundleBuilder(spec, recipe=recipe)
     out_dir = out_root / stock["id"]
     started = perf_counter()
     bundle = builder.build()
@@ -155,6 +160,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--resolution", type=int, default=LUT_RESOLUTION)
     parser.add_argument("--stops-above-midgray", type=float, default=STOPS_ABOVE_MIDGRAY)
+    parser.add_argument(
+        "--camera-ev", type=float, default=None,
+        help="Override camera exposure compensation EV (for a reproducible EV-variant bake)",
+    )
+    parser.add_argument(
+        "--fixed-print-exposure", action="store_true",
+        help="Disable camera-linked print compensation; enlarger exposure stays fixed",
+    )
     parser.add_argument("--stock", action="append", dest="stock_ids")
     parser.add_argument(
         "--output-dir", type=Path, default=BUILD_DIR / "luts",
@@ -174,22 +187,32 @@ def main() -> None:
         stocks = [stock for stock in stocks if stock["id"] in requested]
 
     out_root = args.output_dir.resolve()
+    overrides = {}
+    if args.camera_ev is not None:
+        overrides["camera_exposure_compensation_ev"] = args.camera_ev
+    if args.fixed_print_exposure:
+        overrides["enlarger_print_exposure_compensation"] = False
+    recipe = recipe_config(overrides)
     out_root.mkdir(parents=True, exist_ok=True)
     records = []
     total_started = perf_counter()
     settings = recipe_snapshot(
         resolution=args.resolution,
         stops_above_midgray=args.stops_above_midgray,
+        overrides=overrides,
     )
     print(
         f"Baking {len(stocks)} stocks: sRGB -> sRGB, 1lut {args.resolution}^3, "
         f"stops={args.stops_above_midgray:.12f}, gain={settings['input_exposure_gain']:.6f}, "
         f"camera EV={settings['camera_exposure_compensation_ev']:+.7f}, "
         f"scanner W/B={settings['scanner_white_correction']}/{settings['scanner_black_correction']}",
+        f"print compensation={settings['print_exposure_compensation']}",
         flush=True,
     )
     for stock in stocks:
-        records.append(bake_stock(stock, args.resolution, args.stops_above_midgray, out_root))
+        records.append(bake_stock(
+            stock, args.resolution, args.stops_above_midgray, out_root, recipe=recipe,
+        ))
 
     manifest = {
         "settings": settings,

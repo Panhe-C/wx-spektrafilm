@@ -12,6 +12,7 @@ from embed_shaders import generate as generate_shaders
 
 ROOT = Path(__file__).resolve().parents[1]
 MAIN_PACKAGE_LIMIT = 2 * 1024 * 1024
+LUT_PACKAGE_LIMIT = 1_200_000
 NODE_BUILTINS = {
     "assert", "async_hooks", "buffer", "child_process", "cluster", "console", "constants",
     "crypto", "dgram", "diagnostics_channel", "dns", "domain", "events", "fs", "http",
@@ -21,6 +22,18 @@ NODE_BUILTINS = {
 }
 REQUIRE_PATTERN = re.compile(r"\brequire\s*\(\s*['\"]([^'\"]+)['\"]\s*\)")
 EXCLUDED_WALK_DIRS = {".git", "node_modules", "build", "__pycache__"}
+WXML_TAG_PATTERN = re.compile(
+    r"<(/?)([A-Za-z][\w-]*)((?:\"[^\"]*\"|'[^']*'|[^>\"'])*?)(/?)>", re.S
+)
+WXML_HANDLER_PATTERN = re.compile(r"\b(?:bind|catch|mut-bind)[a-zA-Z:-]*\s*=\s*\"([^\"]+)\"")
+WXML_EXPRESSION_PATTERN = re.compile(r"\{\{([^{}]*)\}\}", re.S)
+WXML_FOR_PATTERN = re.compile(r"wx:for\s*=\s*\"\{\{[^}]*\}\"")
+WXML_FOR_ITEM_PATTERN = re.compile(r"wx:for-item\s*=\s*\"([^\"]+)\"")
+WXML_FOR_INDEX_PATTERN = re.compile(r"wx:for-index\s*=\s*\"([^\"]+)\"")
+IDENTIFIER_PATTERN = re.compile(r"(?<![.\w$])([A-Za-z_$][\w$]*)")
+STRING_LITERAL_PATTERN = re.compile(r"'[^']*'|\"[^\"]*\"")
+EXPRESSION_KEYWORDS = {"true", "false", "null", "undefined", "item", "index"}
+WARNINGS: list[str] = []
 
 
 def load_json(path: Path):
@@ -84,20 +97,129 @@ def package_files(root: Path, ignored_folders=set(), ignored_files=set()) -> lis
 
 def check_png_geometry(manifest: list[dict], package_root: Path, errors: list[str]) -> None:
     for stock in manifest:
-        path = package_root / stock["file"]
-        try:
-            with path.open("rb") as stream:
-                header = stream.read(26)
-            if header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
-                raise ValueError("not a PNG")
-            width, height = struct.unpack(">II", header[16:24])
-            expected = (stock["cols"] * stock["size"], stock["rows"] * stock["size"])
-            if (width, height) != expected:
-                raise ValueError(f"dimensions {width}x{height}, expected {expected[0]}x{expected[1]}")
-            if header[24] != 8 or header[25] != 2:
-                raise ValueError("expected 8-bit RGB PNG (colour type 2)")
-        except (OSError, ValueError, KeyError, struct.error) as error:
-            errors.append(f"Invalid LUT {path.relative_to(ROOT)}: {error}")
+        variants = [stock] + ([stock["extended"]] if stock.get("extended") else [])
+        for variant in variants:
+            path = package_root / variant["file"]
+            try:
+                with path.open("rb") as stream:
+                    header = stream.read(26)
+                if header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
+                    raise ValueError("not a PNG")
+                width, height = struct.unpack(">II", header[16:24])
+                expected = (variant["cols"] * variant["size"], variant["rows"] * variant["size"])
+                if (width, height) != expected:
+                    raise ValueError(f"dimensions {width}x{height}, expected {expected[0]}x{expected[1]}")
+                if header[24] != 8 or header[25] != 2:
+                    raise ValueError("expected 8-bit RGB PNG (colour type 2)")
+                if path.stat().st_size != variant["bytes"]:
+                    raise ValueError("manifest byte count does not match file")
+            except (OSError, ValueError, KeyError, struct.error) as error:
+                errors.append(f"Invalid LUT {path.relative_to(ROOT)}: {error}")
+
+
+def page_data_keys(script_path: Path) -> set[str]:
+    """Top-level keys of the page's ``data`` object (best effort)."""
+    text = script_path.read_text(encoding="utf-8")
+    match = re.search(r"\bdata\s*:\s*\{", text)
+    if not match:
+        return set()
+    start = match.end() - 1
+    depth = 0
+    end = None
+    for index in range(start, len(text)):
+        character = text[index]
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                end = index
+                break
+    if end is None:
+        return set()
+    body = text[start + 1:end]
+    keys = set()
+    depth = 0
+    for line in body.splitlines():
+        stripped = line.strip()
+        if depth == 0:
+            key = re.match(r"([A-Za-z_$][\w$]*)\s*:", stripped)
+            if key:
+                keys.add(key.group(1))
+        depth += (
+            stripped.count("{") + stripped.count("[")
+            - stripped.count("}") - stripped.count("]")
+        )
+    return keys
+
+
+def defined_handlers(script_path: Path) -> set[str]:
+    text = script_path.read_text(encoding="utf-8")
+    names = set(re.findall(r"^\s{2}(?:async\s+)?([A-Za-z_$][\w$]*)\s*\(", text, re.M))
+    names.update(re.findall(r"^\s{2}([A-Za-z_$][\w$]*)\s*:", text, re.M))
+    return names
+
+
+def check_wxml_tags(text: str, label: str, errors: list[str]) -> None:
+    stripped = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    stack: list[str] = []
+    for match in WXML_TAG_PATTERN.finditer(stripped):
+        closing, name, attributes, self_closing = match.groups()
+        if closing:
+            if not stack:
+                errors.append(f"{label}: unexpected closing tag </{name}>")
+            elif stack[-1] != name:
+                errors.append(
+                    f"{label}: closing tag </{name}> does not match open <{stack[-1]}>"
+                )
+                stack.pop()
+            else:
+                stack.pop()
+        elif not self_closing:
+            stack.append(name)
+    for name in stack:
+        errors.append(f"{label}: unclosed tag <{name}>")
+
+
+def check_wxml_handlers(text: str, label: str, handlers: set[str], errors: list[str]) -> None:
+    for handler in sorted(set(WXML_HANDLER_PATTERN.findall(text))):
+        if handler not in handlers:
+            errors.append(f"{label}: event handler '{handler}' is not defined on the page")
+
+
+def check_wxml_identifiers(text: str, label: str, data_keys: set[str],
+                          errors: list[str]) -> None:
+    aliases = {"item", "index"}
+    for match in WXML_FOR_ITEM_PATTERN.finditer(text):
+        aliases.add(match.group(1))
+    for match in WXML_FOR_INDEX_PATTERN.finditer(text):
+        aliases.add(match.group(1))
+    known = data_keys | aliases
+    missing: set[str] = set()
+    for expression in WXML_EXPRESSION_PATTERN.findall(text):
+        cleaned = STRING_LITERAL_PATTERN.sub(" ", expression)
+        for identifier in IDENTIFIER_PATTERN.findall(cleaned):
+            if identifier in EXPRESSION_KEYWORDS or identifier in known:
+                continue
+            missing.add(identifier)
+    for identifier in sorted(missing):
+        errors.append(
+            f"{label}: data identifier '{identifier}' is not in the page data or a wx:for alias"
+        )
+
+
+def check_wxss(path: Path, errors: list[str]) -> None:
+    text = path.read_text(encoding="utf-8")
+    for match in re.finditer(r"@import\s+([\"'])([^\"']+)\1", text):
+        target = (path.parent / match.group(2)).resolve()
+        if not target.is_file():
+            errors.append(f"{path.relative_to(ROOT)}: @import target {match.group(2)} is missing")
+    body = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    body = re.sub(r"@import[^;]+;", "", body)
+    if re.search(r"(^|[\s,>+~])\*(?![\w-])", body):
+        WARNINGS.append(f"{path.relative_to(ROOT)}: universal '*' selector is not reliable")
+    if ":hover" in body:
+        WARNINGS.append(f"{path.relative_to(ROOT)}: ':hover' has no effect in a Mini Program")
 
 
 def main() -> int:
@@ -128,6 +250,22 @@ def main() -> int:
             path = ROOT / f"{entry}.{extension}"
             if not path.is_file():
                 errors.append(f"Missing page file: {path.relative_to(ROOT)}")
+
+    # WXML/WXSS consistency: handlers exist, tags balance, data identifiers
+    # resolve, and no unsupported stylesheet constructs are used.
+    for entry in pages:
+        wxml_path = ROOT / f"{entry}.wxml"
+        script_path = ROOT / f"{entry}.js"
+        wxss_path = ROOT / f"{entry}.wxss"
+        if wxml_path.is_file():
+            wxml = wxml_path.read_text(encoding="utf-8")
+            label = wxml_path.relative_to(ROOT)
+            check_wxml_tags(wxml, str(label), errors)
+            if script_path.is_file():
+                check_wxml_handlers(wxml, str(label), defined_handlers(script_path), errors)
+                check_wxml_identifiers(wxml, str(label), page_data_keys(script_path), errors)
+        if wxss_path.is_file():
+            check_wxss(wxss_path, errors)
 
     runtime_files = [ROOT / "app.js"]
     for directory in ("pages", "utils", "renderer"):
@@ -160,6 +298,8 @@ def main() -> int:
         size = sum(path.stat().st_size for path in package_files(root))
         lut_sizes[package.get("name", package["root"])] = size
         if package.get("name") == "luts":
+            if size >= LUT_PACKAGE_LIMIT:
+                errors.append(f"LUT subpackage is {size} bytes; limit is < {LUT_PACKAGE_LIMIT}")
             try:
                 manifest = load_json(root / "luts.json")
                 check_png_geometry(manifest, root, errors)
@@ -168,6 +308,8 @@ def main() -> int:
 
     print(f"JSON files parsed: {len(json_files)}")
     print(f"Page entries checked: {len(pages)}")
+    for warning in WARNINGS:
+        print(f"WARN: {warning}")
     print(f"Main package: {main_size} bytes ({main_size / 1024:.1f} KiB), {len(main_files)} files")
     for name, size in lut_sizes.items():
         print(f"Subpackage {name}: {size} bytes ({size / 1024:.1f} KiB)")

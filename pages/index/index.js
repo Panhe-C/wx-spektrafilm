@@ -51,7 +51,13 @@ Page({
       this.renderer = null;
     }
     Object.keys(this.lutCache).forEach((key) => {
-      this.lutCache[key].src = '';
+      const entry = this.lutCache[key];
+      if (entry && entry.base) {
+        entry.base.src = '';
+      }
+      if (entry && entry.extended) {
+        entry.extended.src = '';
+      }
     });
     this.lutCache = Object.create(null);
   },
@@ -205,9 +211,17 @@ Page({
     if (this.lutCache[stock.id]) {
       return this.lutCache[stock.id];
     }
-    const image = await loadCanvasImage(this.canvas, `/subpackages/luts/${stock.file}`);
-    this.lutCache[stock.id] = image;
-    return image;
+    // Phase 4a ships an extended-range cube per stock for positive EV and
+    // white balance; both variants are needed before the first render.
+    const base = await loadCanvasImage(this.canvas, `/subpackages/luts/${stock.file}`);
+    let extended = null;
+    if (stock.extended && stock.extended.file) {
+      extended = await loadCanvasImage(
+        this.canvas, `/subpackages/luts/${stock.extended.file}`
+      );
+    }
+    this.lutCache[stock.id] = { base, extended };
+    return this.lutCache[stock.id];
   },
 
   async activateStock(id, operation) {
@@ -223,11 +237,11 @@ Page({
       busyText: `正在载入 ${stock.name}…`,
       error: '',
     });
-    const image = await this.getLutImage(stock);
+    const images = await this.getLutImage(stock);
     if (operation !== this.operationId || request !== this.stockRequestId) {
       return;
     }
-    this.renderer.setLut(image, stock);
+    this.renderer.setLut(images.base, stock, images.extended);
     this.renderer.render(this.data.comparing ? 0 : this.data.intensity);
   },
 

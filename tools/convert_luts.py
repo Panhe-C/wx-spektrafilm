@@ -16,6 +16,7 @@ from pipeline_config import (
     LUT_COLS,
     LUT_DIR,
     MAX_LUT_DIRECTORY_BYTES,
+    MAX_PHASE4_LUT_DIRECTORY_BYTES,
     MAX_TEXTURE_SIDE,
     ROOT,
     load_stocks,
@@ -73,9 +74,19 @@ def _assert_no_color_chunks(path: Path) -> None:
     raise RuntimeError(f"{path}: incomplete PNG")
 
 
-def convert_manifest(manifest_path: Path, output_dir: Path, clean: bool = False) -> dict:
+def convert_manifest(manifest_path: Path, output_dir: Path, clean: bool = False,
+                     extended_manifest_path: Path | None = None,
+                     extended_headroom_ev: float = 2.0) -> dict:
     bake = read_bake_manifest(manifest_path)
     records_by_id = {record["id"]: record for record in bake["stocks"]}
+    extended_bake = (read_bake_manifest(extended_manifest_path)
+                     if extended_manifest_path else None)
+    extended_by_id = ({record["id"]: record for record in extended_bake["stocks"]}
+                      if extended_bake else {})
+    if extended_bake and set(extended_by_id) != set(records_by_id):
+        raise ValueError("Base and extended bake manifests must contain identical stock ids")
+    if extended_bake and extended_headroom_ev <= 0:
+        raise ValueError("extended_headroom_ev must be positive")
     stocks = [stock for stock in load_stocks() if stock["id"] in records_by_id]
     if not stocks:
         raise RuntimeError("Bake manifest contains no configured stocks")
@@ -89,11 +100,22 @@ def convert_manifest(manifest_path: Path, output_dir: Path, clean: bool = False)
         record = records_by_id[stock["id"]]
         output = output_dir / f"{stock['id']}.png"
         geometry = cube_to_grid(ROOT / record["cube"], output)
-        manifest.append({
+        item = {
             "id": stock["id"], "name": stock["name"], "iso": stock["iso"],
             "category": stock["category"], "file": output.name,
             "film": stock["film"], "print": stock["print"], **geometry,
-        })
+        }
+        if extended_bake:
+            extended_output = output_dir / f"{stock['id']}.ev{extended_headroom_ev:g}.png"
+            extended_geometry = cube_to_grid(
+                ROOT / extended_by_id[stock["id"]]["cube"], extended_output,
+            )
+            item["extended"] = {
+                "file": extended_output.name,
+                "headroomEv": float(extended_headroom_ev),
+                **extended_geometry,
+            }
+        manifest.append(item)
         print(
             f"[convert] N={geometry['size']} {stock['id']}: "
             f"{geometry['width']}x{geometry['height']}, {geometry['bytes']:,} bytes",
@@ -109,16 +131,21 @@ def convert_manifest(manifest_path: Path, output_dir: Path, clean: bool = False)
         "resolution": int(bake["settings"]["resolution"]),
         "output_dir": str(output_dir),
         "stock_count": len(manifest),
-        "png_bytes": sum(item["bytes"] for item in manifest),
+        "png_bytes": sum(
+            item["bytes"] + (item.get("extended", {}).get("bytes", 0)) for item in manifest
+        ),
         "total_bytes": total,
+        "extended_resolution": int(extended_bake["settings"]["resolution"]) if extended_bake else None,
+        "extended_headroom_ev": float(extended_headroom_ev) if extended_bake else None,
     }
     print(
         f"[convert] N={result['resolution']} total={total:,} bytes "
         f"({total / 1024:.1f} KiB) -> {output_dir}", flush=True,
     )
-    if output_dir.resolve() == LUT_DIR.resolve() and total >= MAX_LUT_DIRECTORY_BYTES:
+    size_limit = MAX_PHASE4_LUT_DIRECTORY_BYTES if extended_bake else MAX_LUT_DIRECTORY_BYTES
+    if output_dir.resolve() == LUT_DIR.resolve() and total >= size_limit:
         raise RuntimeError(
-            f"LUT subpackage is {total:,} bytes; limit is {MAX_LUT_DIRECTORY_BYTES:,}"
+            f"LUT subpackage is {total:,} bytes; limit is {size_limit:,}"
         )
     return result
 
@@ -128,8 +155,17 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path, default=BUILD_DIR / "bake_manifest.json")
     parser.add_argument("--output-dir", type=Path, default=LUT_DIR)
     parser.add_argument("--clean", action="store_true")
+    parser.add_argument(
+        "--extended-manifest", type=Path, default=None,
+        help="Optional +headroom EV0 bake; adds one nested extended LUT per stock",
+    )
+    parser.add_argument("--extended-headroom-ev", type=float, default=2.0)
     args = parser.parse_args()
-    convert_manifest(args.manifest.resolve(), args.output_dir.resolve(), clean=args.clean)
+    convert_manifest(
+        args.manifest.resolve(), args.output_dir.resolve(), clean=args.clean,
+        extended_manifest_path=(args.extended_manifest.resolve() if args.extended_manifest else None),
+        extended_headroom_ev=args.extended_headroom_ev,
+    )
 
 
 if __name__ == "__main__":

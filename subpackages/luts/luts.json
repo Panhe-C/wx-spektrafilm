@@ -12,7 +12,17 @@
     "rows": 5,
     "width": 264,
     "height": 165,
-    "bytes": 26273
+    "bytes": 26273,
+    "extended": {
+      "file": "portra400.ev2.png",
+      "headroomEv": 2.0,
+      "size": 49,
+      "cols": 8,
+      "rows": 7,
+      "width": 392,
+      "height": 343,
+      "bytes": 72198
+    }
   },
   {
     "id": "portra160",
@@ -27,7 +37,17 @@
     "rows": 5,
     "width": 264,
     "height": 165,
-    "bytes": 25993
+    "bytes": 25993,
+    "extended": {
+      "file": "portra160.ev2.png",
+      "headroomEv": 2.0,
+      "size": 49,
+      "cols": 8,
+      "rows": 7,
+      "width": 392,
+      "height": 343,
+      "bytes": 70514
+    }
   },
   {
     "id": "gold200",
@@ -42,7 +62,17 @@
     "rows": 5,
     "width": 264,
     "height": 165,
-    "bytes": 26748
+    "bytes": 26748,
+    "extended": {
+      "file": "gold200.ev2.png",
+      "headroomEv": 2.0,
+      "size": 49,
+      "cols": 8,
+      "rows": 7,
+      "width": 392,
+      "height": 343,
+      "bytes": 69729
+    }
   },
   {
     "id": "ultramax400",
@@ -57,7 +87,17 @@
     "rows": 5,
     "width": 264,
     "height": 165,
-    "bytes": 26718
+    "bytes": 26718,
+    "extended": {
+      "file": "ultramax400.ev2.png",
+      "headroomEv": 2.0,
+      "size": 49,
+      "cols": 8,
+      "rows": 7,
+      "width": 392,
+      "height": 343,
+      "bytes": 71910
+    }
   },
   {
     "id": "ektar100",
@@ -72,7 +112,17 @@
     "rows": 5,
     "width": 264,
     "height": 165,
-    "bytes": 30823
+    "bytes": 30823,
+    "extended": {
+      "file": "ektar100.ev2.png",
+      "headroomEv": 2.0,
+      "size": 49,
+      "cols": 8,
+      "rows": 7,
+      "width": 392,
+      "height": 343,
+      "bytes": 72034
+    }
   },
   {
     "id": "velvia100",
@@ -87,7 +137,17 @@
     "rows": 5,
     "width": 264,
     "height": 165,
-    "bytes": 28389
+    "bytes": 28389,
+    "extended": {
+      "file": "velvia100.ev2.png",
+      "headroomEv": 2.0,
+      "size": 49,
+      "cols": 8,
+      "rows": 7,
+      "width": 392,
+      "height": 343,
+      "bytes": 65705
+    }
   },
   {
     "id": "provia100f",
@@ -102,7 +162,17 @@
     "rows": 5,
     "width": 264,
     "height": 165,
-    "bytes": 25270
+    "bytes": 25270,
+    "extended": {
+      "file": "provia100f.ev2.png",
+      "headroomEv": 2.0,
+      "size": 49,
+      "cols": 8,
+      "rows": 7,
+      "width": 392,
+      "height": 343,
+      "bytes": 63218
+    }
   },
   {
     "id": "kodachrome64",
@@ -117,7 +187,17 @@
     "rows": 5,
     "width": 264,
     "height": 165,
-    "bytes": 24410
+    "bytes": 24410,
+    "extended": {
+      "file": "kodachrome64.ev2.png",
+      "headroomEv": 2.0,
+      "size": 49,
+      "cols": 8,
+      "rows": 7,
+      "width": 392,
+      "height": 343,
+      "bytes": 67092
+    }
   },
   {
     "id": "pro400h",
@@ -132,7 +212,17 @@
     "rows": 5,
     "width": 264,
     "height": 165,
-    "bytes": 27242
+    "bytes": 27242,
+    "extended": {
+      "file": "pro400h.ev2.png",
+      "headroomEv": 2.0,
+      "size": 49,
+      "cols": 8,
+      "rows": 7,
+      "width": 392,
+      "height": 343,
+      "bytes": 73738
+    }
   },
   {
     "id": "vision3_250d",
@@ -147,7 +237,17 @@
     "rows": 5,
     "width": 264,
     "height": 165,
-    "bytes": 26054
+    "bytes": 26054,
+    "extended": {
+      "file": "vision3_250d.ev2.png",
+      "headroomEv": 2.0,
+      "size": 49,
+      "cols": 8,
+      "rows": 7,
+      "width": 392,
+      "height": 343,
+      "bytes": 70528
+    }
   },
   {
     "id": "vision3_500t",
@@ -162,6 +262,16 @@
     "rows": 5,
     "width": 264,
     "height": 165,
-    "bytes": 25625
+    "bytes": 25625,
+    "extended": {
+      "file": "vision3_500t.ev2.png",
+      "headroomEv": 2.0,
+      "size": 49,
+      "cols": 8,
+      "rows": 7,
+      "width": 392,
+      "height": 343,
+      "bytes": 67455
+    }
   }
 ]

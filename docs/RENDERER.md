@@ -8,7 +8,8 @@ The renderer applies the derived CC BY-SA 4.0 LUT/profile data without adding an
 The canonical shader sources are:
 
 - `shaders/lut.vert.glsl` — full-screen WebGL1 quad and image texture coordinates;
-- `shaders/lut.frag.glsl` — tiled-grid trilinear LUT lookup and intensity mix.
+- `shaders/lut.frag.glsl` — tiled-grid trilinear LUT lookup, camera-side gain, intensity mix, and
+  the optional post-LUT contrast/saturation stage.
 
 WeChat cannot portably fetch a `.glsl` asset as source text, so `tools/embed_shaders.py` writes the
 committed `utils/shaders.js` CommonJS module. After changing GLSL, run:
@@ -20,7 +21,9 @@ python3 tools/embed_shaders.py --check
 
 The static checker rejects a stale embedding. The Mini Program and headless browser both execute
 `utils/lut-renderer.js`; the browser reads the raw `.glsl` files, while the Mini Program uses their
-generated string embedding. There is no second copy of the lookup equations in the harness.
+generated string embedding. The adjustment mapping lives in `utils/adjust.js`, which both hosts
+load; the NumPy mirror used by the physical reference is `tools/wb.py`. There is no second copy of
+the lookup equations or of the slider mapping in the harness.
 
 The asset subpackage also declares the required no-op page `pages/empty/empty`; it is never
 navigated to and does not change the LUT manifest or PNG paths.
@@ -44,11 +47,11 @@ the letterbox. A 1280×854 photo texture is about 4.17 MiB as RGBA in a typical 
 rather than a multi-megapixel 12 MP texture. Decoding the source JPEG still requires temporary
 source memory.
 
-Both textures use WebGL1 `UNSIGNED_BYTE`, `LINEAR` minification/magnification, `CLAMP_TO_EDGE`, and
-no mipmaps. The LUT upload internal format is `RGB` (RGB888). Dithering, depth testing, and blending
-are disabled. DOM/canvas colour-space conversion and unpack Y-flip are disabled where the host
-exposes those controls. The vertex shader flips V for the top-row-first photo canvas; LUT V remains
-in native PNG row order because green increases down each tile.
+All three input textures use WebGL1 `UNSIGNED_BYTE`, `LINEAR` minification/magnification,
+`CLAMP_TO_EDGE`, and no mipmaps. The LUT upload internal format is `RGB` (RGB888). Dithering, depth
+testing, and blending are disabled. DOM/canvas colour-space conversion and unpack Y-flip are
+disabled where the host exposes those controls. The vertex shader flips V for the top-row-first
+photo canvas; LUT V remains in native PNG row order because green increases down each tile.
 
 The LUT uniforms are:
 
@@ -56,10 +59,16 @@ The LUT uniforms are:
 |---|---|
 | `uImage` | Downscaled, upright, encoded-sRGB photo on texture unit 0 |
 | `uLut` | Tiled RGB LUT on texture unit 1 |
-| `uN` | Cube edge length, 33 for the shipped assets |
-| `uCols` | Tile columns, 8 |
-| `uRows` | Tile rows, 5 |
+| `uLutExtended` | Tiled RGB extended-range LUT on texture unit 2 |
+| `uN` / `uCols` / `uRows` | Cube edge length, tile columns, tile rows of `uLut` |
+| `uExtendedN` / `uExtendedCols` / `uExtendedRows` | the same for `uLutExtended` |
+| `uUseExtended` | 1 selects the extended cube, 0 the native cube |
+| `uCameraIdentity` | 1 skips the sRGB↔linear round trip, keeping the Phase-3 output bit-identical |
+| `uLinearGain` | combined camera-side linear RGB gain (EV × white balance) |
 | `uIntensity` | Blend amount in `[0,1]`; 1 is the full film transform |
+| `uContrast` | Contrast slope about encoded 0.5 (`1 + contrast`) |
+| `uSaturation` | Rec.709 encoded-luma saturation multiplier |
+| `uPostIdentity` | 1 skips the non-physical contrast/saturation stage |
 
 ## Exact tiled lookup and half-texel rule
 
@@ -97,6 +106,34 @@ Intensity uses `mix(original, graded, uIntensity)`. At zero the original texture
 the encoded-sRGB values are blended halfway. The page sets intensity to zero on preview touch start
 and restores the slider value on touch end/cancel.
 
+## Camera adjustments and the two LUT variants
+
+Phase 4a adds camera-side exposure EV and white balance before the LUT, plus optional non-physical
+contrast/saturation after it. `utils/adjust.js` is the shared mapping module; the exact semantics,
+ranges, and measurement tables are in `docs/ADJUSTMENTS.md` and `docs/EXPOSURE_EV.md`.
+
+The shader decodes encoded sRGB with the exact piecewise transfer function, multiplies by
+`uLinearGain` in linear light, clamps at the LUT input boundary, and re-encodes. Two cubes are
+resident:
+
+- `uLut` — the shipped N=33 cube, used for identity adjustments and for EV ≤ 0 without WB;
+- `uLutExtended` — an N=49 cube baked from the same physical recipe with two extra stops of linear
+  input headroom, used for EV > 0 or any nonidentity WB. Its lookup divides the camera gain by
+  four first (`2^(EV−2)`), which is algebraically identical to the physical reference.
+
+`uCameraIdentity` and `uPostIdentity` are explicit identity fast paths, so the default output is
+bit-identical to the Phase-3 result instead of depending on an sRGB↔linear round trip. Intensity 0
+returns the untouched original before any adjustment is applied.
+
+## Offscreen rendering and thumbnails
+
+`renderer.renderToPixels({ width, height, intensity, adjustments, onTiming })` renders into a
+cached RGBA framebuffer, reads it back with `readPixels`, and returns top-down `RGBA8` pixels
+together with `{ submitMs, renderMs, readPixelsMs, totalMs }`. The preview framebuffer and
+viewport are restored afterwards, and a temporary `adjustments` object lets thumbnails be rendered
+at default settings while the live preview keeps its own state. This is the path the Phase-4b
+preset cards use.
+
 ## Headless verification
 
 From the repository root:
@@ -110,8 +147,10 @@ npm test
 The command requires `/usr/bin/google-chrome`, the six non-repository phone photos in
 `/workspace/testphotos/p*.jpg`, and the Python scientific environment (`numpy`, Pillow, and
 scikit-image; `/workspace/venv-sf/bin/python` on the build box). `PYTHON` and `TEST_PHOTOS` can
-override those two paths. `npm test` first runs the plain-Node EXIF policy/matrix suite, then starts
-Chrome. `npm run test:smoke` runs only one browser pair and is not a substitute for `npm test`.
+override those two paths. `npm test` first runs the plain-Node EXIF policy/matrix suite and the
+adjustment-mapping unit suite, then starts Chrome. `npm run test:smoke` runs only one browser pair
+and is not a substitute for `npm test`. `npm run study:ev` re-runs the separate physical
+faithfulness study against full `simulate()`; it is resumable and is not part of `npm test`.
 
 Chrome is launched with `--use-gl=swiftshader`, `--enable-webgl`, `--ignore-gpu-blocklist`, and
 `--headless=new`. The browser downscales each photo to a long edge of 1280 with the shared sizing
@@ -119,21 +158,28 @@ function, exports that exact input PNG, and uses the same file for Python LUT ap
 comparison does not hide errors behind two different resizers.
 
 `harness/out/` contains `<stock>/<photo>-shader.png`, `-python.png`, and `-diff.png` for every pair,
-plus `report.json`, `report.md`, `inputs/`, and `contact-shader.jpg`. Diff images show absolute
-8-bit channel differences amplified 16×. The harness fails unless every pair has mean ΔE2000 < 0.3
-and max ΔE2000 < 2.0. It also checks intensity 0 and 0.5 for every stock on the first photo; zero
-must match the original within one code, and half intensity must match the unrounded-Python-LUT
-midpoint within one code and the same ΔE limits.
+`adjustments/<stock>/…` for every EV/WB/post case, `thumbs/` for the generated thumbnails, plus
+`report.json`, `report.md`, `inputs/`, `contact-shader.jpg`, `contact-adjust.jpg`, and
+`contact-thumbs.jpg`. Diff images show absolute 8-bit channel differences amplified 16×. The harness
+fails unless every pair has mean ΔE2000 < 0.3 and max ΔE2000 < 2.0. It also checks intensity 0 and
+0.5 for every stock on the first photo; zero must match the original within one code even with
+extreme EV/WB/post settings applied, and half intensity must match the unrounded-Python-LUT
+midpoint within one code and the same ΔE limits. Adjustment cases compare the shader against
+NumPy implementations of the same math, thumbnails are checked against a pixel-centre bilinear
+sample of the exported input, and the median stock-switch and thumbnail timings must stay below
+300 ms.
 
 Reported shader time includes draw, `gl.finish()`, and a one-pixel synchronous readback, but excludes
 photo/LUT upload and PNG encoding. This is a repeatable headless comparison timing, not a real-phone
 performance measurement.
 
-The final on-box full run passed all **66/66 pairs** and **11/11 intensity checks**. Across all
-stocks/photos, the worst mean ΔE2000 was **0.0005203500** (`velvia100/p237`), the worst maximum was
-**1.2104642391** (`portra160/p1015`), and median render/readback time was **9.90 ms**. Intensity 0
-was code-exact; intensity 0.5 stayed within one code. See `harness/out/report.md` for the full
-per-stock and per-pair tables.
+The final on-box full run passed **66/66 default pairs**, **11/11 intensity checks**, **61/61
+adjustment pairs**, and **11/11 thumbnails**. The worst default mean ΔE2000 was **0.0005203500**
+(`velvia100/p237`) and the worst default maximum was **1.2104642391** (`portra160/p1015`); the worst
+adjustment mean was **0.0004473071** and the worst adjustment maximum **1.2241792679**. Median
+render/readback time was **19.65 ms**, median thumbnail `setLut`+render+readback **1.80 ms**, and
+median full-preview stock switch **15.10 ms**. Intensity 0 was code-exact; intensity 0.5 stayed
+within one code. See `harness/out/report.md` for the full per-stock and per-pair tables.
 
 ## Performance expectation and fallback boundary
 

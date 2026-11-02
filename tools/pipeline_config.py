@@ -38,10 +38,14 @@ LUT_COLS = 8
 LUT_GRID_COLS = LUT_COLS
 MAX_TEXTURE_SIDE = 2048
 MAX_LUT_DIRECTORY_BYTES = int(1.5 * 1024 * 1024)
+MAX_PHASE4_LUT_DIRECTORY_BYTES = 1_200_000
+MAX_PHASE4_LUT_DIRECTORY_BYTES = 1_200_000
 RAMP_CODES = np.array([0, 20, 45, 60, 80, 118, 170, 200, 230, 250, 255], dtype=np.uint8)
 
 NATIVE_STOPS_ABOVE_MIDGRAY = math.log2(1.0 / 0.18)
 STOPS_ABOVE_MIDGRAY = NATIVE_STOPS_ABOVE_MIDGRAY
+EXPOSURE_HEADROOM_EV = 2.0
+EXTENDED_STOPS_ABOVE_MIDGRAY = STOPS_ABOVE_MIDGRAY + EXPOSURE_HEADROOM_EV
 UPSTREAM_SDR_STOPS = 4.0
 # Measured exploration diagnostic only. The per-photo values scatter widely and
 # print compensation cancels this offset for negative/print stocks but not for
@@ -134,8 +138,13 @@ def _recipe_with_overrides(recipe: dict | None, overrides: dict | None) -> dict:
     return result
 
 
+def recipe_config(overrides: dict | None = None) -> dict:
+    """Return a complete internal recipe after validated historical aliases."""
+    return _recipe_with_overrides(None, overrides)
+
+
 def physical_recipe(overrides: dict | None = None) -> dict:
-    recipe = _recipe_with_overrides(None, overrides)
+    recipe = recipe_config(overrides)
     return {
         "camera_exposure_compensation_ev": recipe["camera_exposure_compensation_ev"],
         "enlarger_print_exposure_ev": math.log2(recipe["enlarger_print_exposure"]),
@@ -242,6 +251,29 @@ def encode_srgb_output(linear: np.ndarray, clip: bool = True) -> np.ndarray:
     return np.clip(encoded, 0.0, 1.0) if clip else encoded
 
 
+def simulate_linear_srgb(
+    linear_input: np.ndarray,
+    stock: dict,
+    resolution: int = LUT_RESOLUTION,
+    recipe: dict | None = None,
+    stops_above_midgray: float | None = None,
+    overrides: dict | None = None,
+) -> np.ndarray:
+    """Full public simulate() for already-decoded native linear-sRGB input."""
+    from spektrafilm import simulate
+
+    recipe = _recipe_with_overrides(recipe, overrides)
+    spec = make_bundle_spec(
+        stock, resolution=resolution, recipe=recipe,
+        stops_above_midgray=stops_above_midgray,
+    )
+    params = make_runtime_params(spec, stock["print"], recipe)
+    linear_output = simulate(
+        linear_input, params, digest_params_first=False, print_timings=False,
+    )
+    return encode_srgb_output(linear_output, clip=False)
+
+
 def simulate_srgb(
     image: np.ndarray,
     stock: dict,
@@ -256,17 +288,16 @@ def simulate_srgb(
     inspect physical out-of-gamut values. Display/8-bit conversion clips at the
     same boundary as the LUT creator. There is no additional tone operation.
     """
-    from spektrafilm import simulate
-
     recipe = _recipe_with_overrides(recipe, overrides)
     spec = make_bundle_spec(
         stock, resolution=resolution, recipe=recipe,
         stops_above_midgray=stops_above_midgray,
     )
-    params = make_runtime_params(spec, stock["print"], recipe)
     linear_input = decode_srgb_input(image, recipe, spec.stops_above_midgray)
-    linear_output = simulate(linear_input, params, digest_params_first=False, print_timings=False)
-    return encode_srgb_output(linear_output, clip=False)
+    return simulate_linear_srgb(
+        linear_input, stock, resolution=resolution, recipe=recipe,
+        stops_above_midgray=spec.stops_above_midgray,
+    )
 
 
 def effective_stock_parameters(stock: dict, recipe: dict | None = None) -> dict:

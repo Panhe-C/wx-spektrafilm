@@ -35,6 +35,24 @@ python tools/convert_luts.py --manifest build/bake-manifest-<selected>.json \
 python tools/make_contact_sheet.py               # both docs/lut-*.jpg sheets
 ```
 
+### Phase 4a extended-range assets
+
+The EV/WB controls need two extra stops of linear input headroom, so each stock also ships an
+N=49 extended cube baked from the same physical recipe at camera EV 0:
+
+```bash
+python tools/bake_luts.py --resolution 49 --stops-above-midgray 4.473931188332 \
+  --output-dir build/p4a/cubes/b49-all --manifest build/p4a/bake-b49-all.json
+python tools/convert_luts.py --manifest build/bake_manifest.json \
+  --extended-manifest build/p4a/bake-b49-all.json \
+  --output-dir subpackages/luts --clean --extended-headroom-ev 2
+```
+
+The conversion is atomic: it rewrites the base PNGs, writes `<id>.ev2.png`, and merges a nested
+`extended` record into `luts.json` in one pass, then enforces the 1,200,000-byte Phase-4 subpackage
+budget. `tools/bake_luts.py --camera-ev` and `--fixed-print-exposure` produce reproducible
+camera-EV variants for the candidate study; they are not used for the shipped assets.
+
 `run_all.sh` fills in the selected manifest automatically and copies it to `build/bake_manifest.json`.
 For an interrupted rerun with a complete existing exploration, `SKIP_EXPOSURE=1 bash tools/run_all.sh`
 avoids repeating that sweep. Do not use the skip flag after changing the physical recipe or fixtures.
@@ -76,6 +94,21 @@ Scanner unsharp masking stays off. No per-stock exposure, shadow, white, or neut
 print compensation/normalization, and ±0.5 print-EV candidates on neutral ramps and all six phone
 photos. Measurements and selection reasoning are in `docs/EXPOSURE.md`; the soft white≥240 goal is
 not met, and the zero-EV choice avoids the median candidate's direct-scan slide underexposure.
+
+### Phase 4a EV/WB study
+
+`tools/study_exposure_ev.py` and `tools/study_white_balance.py` measure the EV/WB candidates
+(native gain, extended-range, per-EV LUTs, and the combination) against **full `simulate()`**
+references with fixed print exposure, and rewrite `docs/EXPOSURE_EV.md` after every stock
+checkpoint. They are resumable:
+
+```bash
+cd harness && npm run study:ev     # or: python tools/study_exposure_ev.py --resume
+```
+
+The study needs the representative candidate assets under `build/p4a/grids/`; re-bake them with
+`tools/bake_luts.py --camera-ev`/`--stops-above-midgray` if the directory is empty. The results
+are physical-faithfulness numbers and are deliberately **not** part of `npm test`.
 
 ## Stocks and print choices
 

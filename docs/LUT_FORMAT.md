@@ -88,3 +88,27 @@ out-of-range floating-point values are clipped only at the same cube/display bou
 records pre-clip edge statistics in `build/bake-manifest-<N>.json` and summarizes the selected N in
 `docs/validation.md`. Quantization-only error compares float trilinear interpolation of original
 versus 8-bit-rounded nodes, separately from interpolation and final render-target rounding.
+
+## Extended-range variant
+
+Phase 4a adds one extra PNG per stock, `<id>.ev2.png`, baked from the **same physical recipe at
+camera EV 0** but with `stops_above_midgray = 4.473931188332` (input gain 4). It is the identical
+tiled-grid format with **N=49** (392×343, 8 columns, 7 rows) and carries two extra stops of linear
+input headroom, which is what the camera-side EV and white-balance gains need before the film LUT.
+
+The extended cube is *not* a different look: it is the same physical transform sampled over a wider
+input range. The shader divides the camera gain by four (`2^(EV−2)`) before the extended lookup,
+which is algebraically identical to applying the gain to the film input directly. The manifest
+records it as a nested `extended` object:
+
+```json
+"extended": {
+  "file": "portra400.ev2.png",
+  "headroomEv": 2.0,
+  "size": 49, "cols": 8, "rows": 7, "width": 392, "height": 343, "bytes": 72198
+}
+```
+
+The base `<id>.png` files are unchanged by the Phase-4a bake, so the default output remains
+bit-identical to the Phase-3 result. See `docs/EXPOSURE_EV.md` for the measurements that justify
+the variant and `docs/ADJUSTMENTS.md` for how the shader selects between them.
