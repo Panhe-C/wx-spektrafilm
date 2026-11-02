@@ -296,6 +296,86 @@ validated against the real `simulate()` with the same setting.
 - Static checks pass; docs: `docs/EXPOSURE_EV.md`, `docs/ADJUSTMENTS.md`, `docs/RENDERER.md` updated, `docs/LIMITATIONS.md`,
   README feature list updated.
 
+## Phase 5 — Spatial effects, full-resolution export, share
+
+Rules unchanged (native Mini Program, single GLSL source of truth in `shaders/`, no duplicated math
+between host and harness, main package < 2 MB, LUT subpackage < 1.2 MB, GPLv3 + spektrafilm credit).
+New assets must be tiny (no new large textures); procedural noise only.
+
+### 5a. Spatial effects as approximate shaders (study spektrafilm first)
+Read `/workspace/spektrafilm/src/spektrafilm/model/{grain,glare,diffusion}.py`,
+`runtime/{pipeline,stages/*}.py`, `runtime/params_schema.py` (GrainParams, HalationParams, DiffusionFilterParams,
+GlareParams), `data/profiles/*.json` (per-stock grain/halation defaults) and `tools/pipeline_config.py`.
+Write `docs/EFFECTS.md` documenting: where each effect sits in spektrafilm's pipeline (grain on density
+before print; halation/scatter on exposure before development), the exact parameters/defaults per stock,
+and how our post-LUT shader approximations map to them and where they DIVERGE from the physics (be explicit:
+our LUT is baked without spatial effects; grain/halation are applied on the final sRGB image as an approximation).
+1. **Grain**: deterministic procedural noise (integer-hash based, seed constant; no texture assets), density-
+   dependent amplitude (physical particle statistics: variance peaks in midtones/density, falls to zero at
+   Dmin/Dmax — derive the tone dependence from `layer_particle_model` and the output tone), per-stock size/strength
+   derived from the stock's profile parameters (`particle_area_um2`, `particle_scale`, `uniformity`, film
+   format 35 mm => frame width 36 mm), RGB-correlated + a luminance-correlated mixture as in the model, spatial blur
+   matching `blur`/`blur_dye_clouds_um`. **Resolution independence**: grain size defined in physical film units
+   mapped to image pixels through the frame width (36 mm = image long edge), noise sampled in a normalised
+   frame coordinate system so preview (1280 px) and export (4096 px) show the same grain scale; at higher
+   resolution the grain is finer in px but the same relative to the picture (document how aliasing at low
+   res is handled — e.g. noise generated at a fixed frame grid resolution and filtered, or analytic blur).
+   Strength UI factor 0..2 (default 1 = physical-ish; default per app: ON at modest strength is acceptable if
+   documented).
+2. **Halation (+ in-emulsion scatter)**: highlight-weighted, red-dominant bloom, per-stock strength from
+   `halation_strength`, `halation_first_sigma_um` (frame-relative sizes), `scatter_*`; approximated with a small
+   separable multi-tap blur in a second pass (or multi-tap in the single pass if it stays WebGL1-cheap),
+   operating on the pre-LUT linear exposure if feasible (preferred: it mimics the physics order — halation
+   before development) or on the pre-LUT image otherwise. Decide and document. Optional: use a downsampled
+   target for the wide kernel. Must not break the faithful no-effects path: all effects default to OFF at
+   uStrength=0 and then the output equals Phase-4 within 1 code (regression).
+3. **Vignette** (optional, simple radial falloff, UI strength, default 0), labelled non-physical.
+4. UI: an 「效果」 panel with toggles/sliders: 颗粒 (strength), 光晕 (strength), 暗角 (strength); labelled as
+   approximate; reset button covers them; thumbnails do not include effects (document).
+5. **Physics comparison (honest numbers)**: with full `simulate()` run grain-on vs grain-off on flat gray
+   patches at several levels (e.g. sRGB codes 30..230) for >= 4 stocks (incl. slide + cinema) at a defined output
+   scale: measure per-level std of the grain-induced difference (in sRGB code and linear) and spatial autocorrelation;
+   compare to the shader's measured std/autocorrelation (headless harness, same patches, same output scale).
+   Same for halation: simulate() halation-on vs off on a synthetic bright disc/edge on dark background, measure
+   the radial profile of the added energy per channel and compare with the shader's profile. Report tables
+   (`docs/EFFECTS.md`), the fitted/derived constants, and the residual mismatch. Any constants fitted to the
+   physics must be derived with a documented procedure per stock (not hand-tuned looks).
+6. Harness: determinism (same seed => bit-identical output twice; different image size => same grain scale
+   statistically), strength=0 identity regression vs Phase 4, stats vs NumPy reference of the same shader math,
+   timing of effects at 1280 px.
+
+### 5b. Full-resolution export
+- `utils/export.js` (pure logic + injected host adapters so it is node-testable with mocks) and page wiring:
+  target size = min(original long side, 4096, GPU MAX_TEXTURE_SIZE/ caps); orient per EXIF decision from
+  `utils/photo.js`; decode original into an offscreen 2D canvas at export size; upload; render with TILING
+  (e.g. tiles <= 2048 px with a margin >= max effect kernel radius) using tile offset/scale uniforms so grain
+  (global pixel coordinates in frame space), halation and vignette are seamless; assemble into a 2D canvas; write a
+  JPEG (quality ~0.92) via `wx.canvasToTempFilePath` (`fileType:'jpg'`) and save with
+  `wx.saveImageToPhotosAlbum`. Full adjustments/intensity/effects as shown in the preview, but the original
+  photo is never modified.
+- Permissions logic: `wx.getSetting` -> `scope.writePhotosAlbum`; if not asked, `wx.authorize`; if denied, show a
+  modal explaining and `wx.openSetting` guidance; handle cancel; map errors to Chinese messages. Fully unit-tested with a mock `wx`.
+- UI: 「保存」 button, progress feedback (stages: 解码 / 渲染 n/m / 编码 / 保存), cancel, success/failure toasts;
+  UI remains responsive (yield between tiles with setTimeout, no long synchronous blocks > ~50 ms where possible),
+  memory-conscious (release the large textures/canvases afterwards).
+- Harness: export tiling seam test — render the same image tiled vs single-pass at the same output size (e.g. 3000x2000),
+  all effects on, assert max abs diff <= 1 code and no seam artefact; also test tile planner math (margins, coverage, no gaps).
+
+### 5c. Fixes and basics
+- Post-LUT contrast: the slider minimum currently produces a flat grey image (multiplier 0). Narrow to a sensible
+  multiplier range (e.g. 0.7 .. 1.4, mapped smoothly; slider -1..1 keeps identity at 0); update `utils/adjust.js`,
+  shader mapping, tests, docs. Saturation 0 (B&W) stays valid.
+- Share: `onShareAppMessage` (title, path) and `onShareTimeline` (title, query) with `wx.showShareMenu`.
+- `docs/RELEASE_TODO.md`: what release needs (do NOT implement): real AppID, 用户隐私保护指引 + privacy authorization
+  API (`wx.requirePrivacyAuthorize`/`onNeedPrivacyAuthorization`) for chooseMedia/saveImageToPhotosAlbum, service
+  category, review materials, open-source/licence note, content/no-upload statement, version & changelog, test on devices.
+
+### Acceptance (Phase 5)
+- `docs/EFFECTS.md` has the pipeline mapping, divergences, and physics-vs-shader tables.
+- Harness all-green: defaults regression, effects determinism/scale/identity, export tiling seams, permission-flow
+  mocks, contrast range tests; static checks pass; sizes within budgets.
+- Contact sheet `harness/out/contact-effects.jpg` (effects off/on crops at 100% for 3 stocks) and a 1:1 crop
+  comparison simulate()-grain vs shader-grain image (`harness/out/grain-compare.jpg`).
+
 ## Later phases
-5 effects (grain/halation shaders) & export (`wx.canvasToTempFilePath` + `wx.saveImageToPhotosAlbum`);
-6 release (privacy policy, review). Server mode remains dropped.
+6 release (privacy policy, review, real AppID, device testing). Server mode remains dropped.
