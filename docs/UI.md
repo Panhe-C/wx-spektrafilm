@@ -10,7 +10,7 @@ executed by hand. The renderer and the adjustment model are documented in `docs/
 ## Page structure
 
 The single page `pages/index/index` is a fixed dark layout: a header, the WebGL preview, a
-scrollable body with three sections, and a pinned action bar.
+scrollable body with five sections, and a pinned action bar.
 
 ```text
 .page  (flex column, 100vh)
@@ -22,7 +22,8 @@ scrollable body with three sections, and a pinned action bar.
 │   ├── 调整                 曝光 EV, 色温, 色调, 强度, 后期微调（对比度, 饱和度）, 重置
 │   ├── 效果                 颗粒, 光晕, 暗角, 重置效果
 │   ├── 导出                 说明, 进度条 + 取消, 保存到相册
-│   └── 关于                 attribution, licence, version, effect-scope note
+│   └── 关于                 attribution, licence, version, effect-scope note, 诊断
+├── .diagnostics-modal      copyable monospaced device report (conditional)
 └── .actions                从相册选择 / 拍照 / 清除  (+ safe-area padding)
 ```
 
@@ -112,6 +113,22 @@ The page implements `onShareAppMessage()` (a title and the path `/pages/index/in
 `onShareTimeline()` (a title), and `wx.showShareMenu({ menus: ['shareAppMessage',
 'shareTimeline'] })` is called in `onLoad`, so both entries appear in the platform menus. The
 share does not carry any user data.
+
+## Hidden device diagnostics
+
+**关于 → 诊断** and a long-press on the **SPEKTRAFILM** title open the same modal. Opening or tapping
+**重新运行** executes the shared GL suite; **复制** sends the monospaced report to
+`wx.setClipboardData`, and **关闭** dismisses it. The report contains GL capabilities, canvas and
+source sizes, P/D upload attempts and fallbacks, per-texture completeness parameters/status/GL
+errors, a solid-colour FBO test, CPU-versus-GPU photo/LUT probes, and full-shader intensity 1/0
+centre pixels. It contains only tiny probe values, not the photo itself.
+
+The latest report is cached in memory by `utils/diagnostics.js` and logged with
+`[wx-spektrafilm][diag]`. When another page operation raises the error banner, the page generates a
+report and appends 「已生成诊断，可在 关于 → 诊断 查看」. If both pixel and direct photo uploads read
+black, the legal all-black-photo path instead shows 「照片读取为全黑，可在 关于 → 诊断 查看」; this warning
+is never used for LUTs. The report is not persisted or uploaded. Probe
+interpretation and the original iPhone investigation are in `docs/DEVICE_DEBUG.md`.
 
 ## Phase state machine
 
@@ -220,8 +237,11 @@ encoder, base64 encoder), the **page-wiring tests** (`harness/test-page.mjs`: th
 boots under a mocked WeChat host, the phase machine drives the busy mask, the sliders update the
 renderer while the readouts stay throttled, the reset restores every default, press-and-hold
 compares, the thumbnail path degrades to a placeholder when the export fails, and every WXML
-handler exists on the page), and then the headless Chrome/SwiftShader comparison against the NumPy
-references, including the thumbnail path and the stock-switch timing, followed by the
+handler exists on the page), the **pure diagnostics formatter**
+(`harness/test-diagnostics.mjs`), and then the headless Chrome/SwiftShader comparison against the NumPy
+references, including the thumbnail path and the stock-switch timing. The upload/diagnostics browser
+suite (`harness/test-upload-strategies.mjs`) proves P/D equivalence within one code,
+zero-filled-source fallback, and exact/bounded GL probes. It is followed by the
 **spatial-effect suite** (`harness/test-effects.mjs`): determinism, the identity of the
 strength-0 path against `tools/lut_apply.py`, the scale invariance of the grain statistics, the
 agreement with the NumPy mirror of the grain maths, the halation radial profile against the
@@ -267,7 +287,7 @@ debug session). None of them is covered by the headless harness.
     selected stock and the photo stay untouched.
 11. **Press and hold** — holding the preview shows the untouched original, even with EV, white
     balance, contrast and saturation set to extreme values.
-12. **About** — the 「关于」 section shows the spektrafilm credit, the project URL (tap to copy),
+12. **About and diagnostics** — the 「关于」 section shows the spektrafilm credit, the project URL (tap to copy),
     the licence split (GPLv3 code / CC BY-SA 4.0 data), the version, and the note that the grain
     and the halation are approximations.
 13. **Layout** — no horizontal scrolling, no clipped text, no layout jump when a thumbnail

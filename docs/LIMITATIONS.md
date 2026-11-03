@@ -167,11 +167,15 @@ references remain on the build box; they are not committed to the Mini Program p
 
 ## Renderer and host limitations
 
-- The final on-box full harness run passed 66/66 default pairs, 11/11 intensity checks, 61/61
-  EV/WB/post adjustment pairs, and 11/11 thumbnails. It compares the shared GLSL and texture path
-  with `tools/lut_apply.py` and the NumPy adjustment reference; it is **not** a WeChat DevTools or
-  physical-device certification. WebGL context creation, `canvas.createImage`, offscreen Canvas2D,
-  touch/slider behaviour, and real GPU rounding still need target-device tests.
+- The final on-box full harness run checks the shared GLSL and texture path against
+  `tools/lut_apply.py` and the NumPy adjustment reference; dedicated tests also force RGBA-byte and
+  direct-source uploads, inject zero-filled uploads, and assert the GL diagnostic probes. It is
+  **not** a WeChat DevTools or physical-device certification. WebGL context creation,
+  `canvas.createImage`, offscreen Canvas2D byte readback, touch/slider behaviour, real GPU rounding,
+  and iOS canvas compositing still need target-device tests. P (typed RGBA) is preferred because a
+  direct offscreen-source upload can be silently black on a host even when headless WebGL accepts it;
+  the on-device P/D self-check and copied report are the certification boundary. See
+  `docs/DEVICE_DEBUG.md`.
 - The pure UI policy (slider ranges and steps, readouts, category grouping, thumbnail geometry and
   ordering, the setData throttle, and the phase machine) is unit-tested in Node, and the phase
   machine is the only place that decides the busy mask. The *visual* result of that policy —
@@ -180,9 +184,11 @@ references remain on the build box; they are not committed to the Mini Program p
 - The preset thumbnails are rendered from the current photo at the stock's default look. They are
   not a per-stock preview of the user's own adjustment state, and they are regenerated for every
   new photo.
-- The offscreen `renderToPixels()` path used for thumbnails has been verified headlessly only. On a
-  real device the framebuffer readback path and the `putImageData`/temp-file conversion still need
-  a device test. The WeChat export order is `wx.canvasToTempFilePath({ canvas })` → `toDataURL` →
+- The offscreen `renderToPixels()` path used for thumbnails is headlessly verified, and every
+  photo/LUT upload has a CPU-versus-GPU self-check with an automatic P/D fallback. A real device must
+  still confirm the `putImageData`/temp-file conversion and visible canvas compositing. The hidden
+  关于 → 诊断 panel reports exact solid-colour, photo/LUT, and full-shader probes for that purpose.
+  The WeChat export order is `wx.canvasToTempFilePath({ canvas })` → `toDataURL` →
   a built-in PNG encoder written to `USER_DATA_PATH` → a coloured placeholder, and the last step
   guarantees that a failed export degrades to a placeholder instead of a broken image. Whether
   `wx.canvasToTempFilePath` accepts an offscreen canvas depends on the base library version, so
@@ -204,9 +210,13 @@ references remain on the build box; they are not committed to the Mini Program p
 - LUT PNGs and the generated JS manifest ship in the main package; selecting the first stock does not
   require a subpackage download. Previously decoded LUT images are cached in page memory, but there is
   no persistent decoded-image cache or package-update manager.
+- The preview retains CPU RGBA bytes for diagnostics and upload retry in addition to the GPU texture
+  (about 4.17 MiB for 1280×854). This bounded preview overhead is separate from the larger export
+  peak; low-memory behaviour still requires a physical-device test.
 - The roughly one-second mid-phone preview target is a documented engineering estimate. Headless
   render milliseconds exclude JPEG decode, local PNG decode, app layout, and PNG export, and cannot
-  establish real-device latency.
+  establish real-device latency. Upload self-checks and CPU byte retention also make the old estimate
+  less predictive; measure the affected device rather than extrapolating from SwiftShader.
 
 ## Still deferred to later phases
 

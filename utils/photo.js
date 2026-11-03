@@ -166,10 +166,24 @@ function drawOriented(decoded, size) {
   const transform = orientationTransform(
     decoded.decision.transformOrientation, decoded.sourceWidth, decoded.sourceHeight
   );
-  context.setTransform(...transform);
-  context.drawImage(decoded.source, 0, 0, decoded.sourceWidth, decoded.sourceHeight);
-  context.setTransform(1, 0, 0, 1, 0, 0);
-  decoded.source.src = '';
+  let released = false;
+  function drawOriginal() {
+    if (released) {
+      throw new Error('The original decoded Image has already been released');
+    }
+    // Retry uses the original canvas.createImage() Image, not a snapshot of
+    // the potentially zero Canvas2D output. Orientation and output geometry
+    // remain identical to the first draw.
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.clearRect(0, 0, size.width, size.height);
+    context.setTransform(...transform);
+    try {
+      context.drawImage(decoded.source, 0, 0, decoded.sourceWidth, decoded.sourceHeight);
+    } finally {
+      context.setTransform(1, 0, 0, 1, 0, 0);
+    }
+  }
+  drawOriginal();
 
   return {
     canvas: output,
@@ -179,6 +193,18 @@ function drawOriented(decoded, size) {
     sourceHeight: decoded.sourceHeight,
     orientation: decoded.decision.orientation,
     engineApplied: decoded.decision.engineApplied,
+    // The renderer invokes this at most once, only when its CPU RGBA decode is
+    // all black. The original Image stays alive until release() after upload.
+    retryDecode: () => {
+      drawOriginal();
+      return output;
+    },
+    release: () => {
+      if (!released) {
+        released = true;
+        decoded.source.src = '';
+      }
+    },
   };
 }
 

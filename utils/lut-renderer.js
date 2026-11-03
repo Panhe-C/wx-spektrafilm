@@ -20,6 +20,106 @@
   // The halation exposure buffer keeps two stops of headroom above diffuse
   // white so that clipped highlights still feed the bloom.
   const HALO_EXPOSURE_SCALE = 4.0;
+  const UPLOAD_STRATEGIES = Object.freeze({ PIXELS: 'pixels', DIRECT: 'direct' });
+  const DIAG_LOG_PREFIX = '[wx-spektrafilm][diag]';
+  const PROBE_SIZE = 4;
+
+  function normalizeUploadStrategy(value) {
+    const strategy = String(value || UPLOAD_STRATEGIES.PIXELS).toLowerCase();
+    if (strategy === 'p' || strategy === 'rgba' || strategy === 'bytes') {
+      return UPLOAD_STRATEGIES.PIXELS;
+    }
+    if (strategy === 'd' || strategy === 'source') {
+      return UPLOAD_STRATEGIES.DIRECT;
+    }
+    if (strategy !== UPLOAD_STRATEGIES.PIXELS && strategy !== UPLOAD_STRATEGIES.DIRECT) {
+      throw new Error(`Unknown texture upload strategy: ${value}`);
+    }
+    return strategy;
+  }
+
+  function sourceDimensions(source) {
+    const width = Math.round(Number(source && (source.width || source.videoWidth)));
+    const height = Math.round(Number(source && (source.height || source.videoHeight)));
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) {
+      throw new Error('Texture source has invalid dimensions');
+    }
+    return { width, height };
+  }
+
+  function describeSource(source) {
+    if (!source) {
+      return 'null';
+    }
+    if (source.pixels && source.width && source.height) {
+      return 'rgba-bytes';
+    }
+    const constructorName = source.constructor && source.constructor.name
+      ? String(source.constructor.name)
+      : '';
+    if (/ImageBitmap/.test(constructorName)) {
+      return 'image-bitmap';
+    }
+    if (/Image/.test(constructorName) || (typeof source.src === 'string' && !source.getContext)) {
+      return 'canvas-image';
+    }
+    if (typeof source.getContext === 'function') {
+      try {
+        if (source.getContext('2d')) {
+          return /OffscreenCanvas/.test(constructorName) ? 'offscreen-2d-canvas' : '2d-canvas';
+        }
+      } catch (error) {
+        // A WebGL canvas cannot also vend a 2D context. It is not a supported
+        // source here, but the regular upload error will be more informative.
+      }
+      return /OffscreenCanvas/.test(constructorName) ? 'offscreen-canvas' : 'canvas';
+    }
+    return constructorName || typeof source;
+  }
+
+  function meanRgb(pixels) {
+    let sum = 0;
+    const count = Math.floor(pixels.length / 4);
+    for (let offset = 0; offset < count * 4; offset += 4) {
+      sum += pixels[offset] + pixels[offset + 1] + pixels[offset + 2];
+    }
+    return count ? sum / (count * 3) : 0;
+  }
+
+  function pixelAt(pixels, width, x, y) {
+    const offset = (y * width + x) * 4;
+    return Array.from(pixels.subarray(offset, offset + 4));
+  }
+
+  function maxPixelDifference(first, second) {
+    let difference = 0;
+    for (let channel = 0; channel < 3; channel += 1) {
+      difference = Math.max(difference, Math.abs(first[channel] - second[channel]));
+    }
+    return difference;
+  }
+
+  // CPU equivalent of the centre sample done by the full shader at uv=0.5.
+  // Texel-centred diagnostic probes use pixelAt instead; this helper handles
+  // the half-way sample on even-sized sources without hiding interpolation.
+  function bilinearAtHalf(pixels, width, height) {
+    const sourceX = width * 0.5 - 0.5;
+    const sourceY = height * 0.5 - 0.5;
+    const x0 = Math.max(0, Math.min(width - 1, Math.floor(sourceX)));
+    const y0 = Math.max(0, Math.min(height - 1, Math.floor(sourceY)));
+    const x1 = Math.min(width - 1, x0 + 1);
+    const y1 = Math.min(height - 1, y0 + 1);
+    const fx = Math.max(0, sourceX - Math.floor(sourceX));
+    const fy = Math.max(0, sourceY - Math.floor(sourceY));
+    const p00 = pixelAt(pixels, width, x0, y0);
+    const p10 = pixelAt(pixels, width, x1, y0);
+    const p01 = pixelAt(pixels, width, x0, y1);
+    const p11 = pixelAt(pixels, width, x1, y1);
+    return [0, 1, 2, 3].map((channel) => Math.round(
+      p00[channel] * (1 - fx) * (1 - fy) + p10[channel] * fx * (1 - fy) +
+      p01[channel] * (1 - fx) * fy + p11[channel] * fx * fy
+    ));
+  }
 
   function computePreviewSize(width, height, devicePixelRatio, maxTextureSize, longEdge) {
     const targetEdge = longEdge || 1280;
@@ -107,15 +207,168 @@
       ? createProgram(gl, options.vertexSource, options.haloFragmentSource)
       : null;
     const buffer = gl.createBuffer();
-    const photoTexture = gl.createTexture();
-    const lutTexture = gl.createTexture();
-    const extendedLutTexture = gl.createTexture();
-    const targetTexture = gl.createTexture();
+    const textureRecords = Object.create(null);
+    const glErrors = [];
+    const uploadAttempts = [];
+    const uploadFallbacks = [];
+    let preferredUploadStrategy = normalizeUploadStrategy(options.uploadStrategy);
+    let activeUploadStrategy = preferredUploadStrategy;
+
+    function glErrorName(code) {
+      const names = ['INVALID_ENUM', 'INVALID_VALUE', 'INVALID_OPERATION',
+        'INVALID_FRAMEBUFFER_OPERATION', 'OUT_OF_MEMORY', 'CONTEXT_LOST_WEBGL'];
+      const match = names.find((name) => gl[name] === code);
+      return match || `0x${Number(code).toString(16)}`;
+    }
+
+    function collectGlErrors(stage, textureName) {
+      const found = [];
+      for (let index = 0; index < 16; index += 1) {
+        const code = gl.getError();
+        if (code === gl.NO_ERROR) {
+          break;
+        }
+        const entry = {
+          stage,
+          texture: textureName || '',
+          code,
+          name: glErrorName(code),
+        };
+        found.push(entry);
+        glErrors.push(entry);
+        if (glErrors.length > 160) {
+          glErrors.shift();
+        }
+        console.error(`${DIAG_LOG_PREFIX}[gl] ${stage} ${entry.name} (${code})`);
+      }
+      return found;
+    }
+
+    function setUnpackState(directSource) {
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      if (typeof gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL !== 'undefined') {
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      }
+      // Typed-array uploads are already defined RGBA bytes. Colour-space
+      // conversion is only relevant to the direct DOM/WeChat source overload.
+      if (directSource && typeof gl.UNPACK_COLORSPACE_CONVERSION_WEBGL !== 'undefined') {
+        gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+      }
+    }
+
+    // Every WebGL1 texture, including targets and unused samplers, starts as
+    // a complete opaque 1x1 RGBA texture. Reallocating with texImage2D does
+    // not reset any of these parameters on the same texture object.
+    function createTrackedTexture(name, unit) {
+      const texture = gl.createTexture();
+      const record = {
+        name,
+        texture,
+        unit,
+        width: 1,
+        height: 1,
+        format: 'RGBA8',
+        filter: 'LINEAR',
+        wrap: 'CLAMP_TO_EDGE',
+        mipmaps: false,
+        status: 'placeholder',
+        strategy: '',
+        sourceType: '',
+        source: null,
+        pixels: null,
+        metadata: null,
+        cpuDecodeSuspect: false,
+        photoAllBlack: false,
+        decodeRetried: false,
+        decodeRetryError: '',
+        selfChecks: [],
+      };
+      textureRecords[name] = record;
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      setUnpackState(false);
+      gl.texImage2D(
+        gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+        new Uint8Array([0, 0, 0, 255])
+      );
+      collectGlErrors(`texture-create:${name}`, name);
+      return record;
+    }
+
+    function allocateTexture(record, width, height) {
+      gl.activeTexture(record.unit === null ? gl.TEXTURE0 : record.unit);
+      gl.bindTexture(gl.TEXTURE_2D, record.texture);
+      setUnpackState(false);
+      gl.texImage2D(
+        gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0,
+        gl.RGBA, gl.UNSIGNED_BYTE, null
+      );
+      record.width = width;
+      record.height = height;
+      record.format = 'RGBA8';
+      record.status = 'allocated';
+      collectGlErrors(`texture-allocate:${record.name}`, record.name);
+    }
+
+    gl.activeTexture(gl.TEXTURE0);
+    const photoRecord = createTrackedTexture('photo', gl.TEXTURE0);
+    const photoTexture = photoRecord.texture;
+    gl.activeTexture(gl.TEXTURE1);
+    const lutRecord = createTrackedTexture('lut', gl.TEXTURE1);
+    const lutTexture = lutRecord.texture;
+    gl.activeTexture(gl.TEXTURE2);
+    const extendedLutRecord = createTrackedTexture('lutExtended', gl.TEXTURE2);
+    const extendedLutTexture = extendedLutRecord.texture;
+    gl.activeTexture(gl.TEXTURE0);
+    const targetRecord = createTrackedTexture('target', null);
+    const targetTexture = targetRecord.texture;
     const targetFramebuffer = gl.createFramebuffer();
-    const haloTextureA = gl.createTexture();
-    const haloTextureB = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE3);
+    const haloRecordA = createTrackedTexture('haloA', gl.TEXTURE3);
+    const haloTextureA = haloRecordA.texture;
+    const haloRecordB = createTrackedTexture('haloB', gl.TEXTURE3);
+    const haloTextureB = haloRecordB.texture;
     const haloFramebufferA = gl.createFramebuffer();
     const haloFramebufferB = gl.createFramebuffer();
+    gl.activeTexture(gl.TEXTURE0);
+    const probeRecord = createTrackedTexture('probe', null);
+    const probeFramebuffer = gl.createFramebuffer();
+    const probeProgram = createProgram(gl, options.vertexSource, `
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+uniform sampler2D uProbeSource;
+uniform vec2 uProbePoint;
+uniform float uProbeMode;
+varying vec2 vUv;
+void main() {
+  if (uProbeMode > 1.5) {
+    gl_FragColor = vec4(1.0, 0.0, 128.0 / 255.0, 1.0);
+  } else {
+    vec2 uv = uProbeMode > 0.5 ? uProbePoint : vUv;
+    gl_FragColor = texture2D(uProbeSource, uv);
+  }
+}
+`);
+    const probeUniforms = {
+      source: gl.getUniformLocation(probeProgram, 'uProbeSource'),
+      point: gl.getUniformLocation(probeProgram, 'uProbePoint'),
+      mode: gl.getUniformLocation(probeProgram, 'uProbeMode'),
+    };
+    allocateTexture(probeRecord, PROBE_SIZE, PROBE_SIZE);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, probeFramebuffer);
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, probeRecord.texture, 0
+    );
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+      throw new Error('Texture diagnostic framebuffer is incomplete');
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     const uniforms = {
       image: gl.getUniformLocation(program, 'uImage'),
       lut: gl.getUniformLocation(program, 'uLut'),
@@ -206,56 +459,429 @@
     gl.disable(gl.DITHER);
     gl.clearColor(0, 0, 0, 1);
 
-    function configureTexture(texture) {
-      gl.bindTexture(gl.TEXTURE_2D, texture);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texImage2D(
-        gl.TEXTURE_2D, 0, gl.RGB, 1, 1, 0, gl.RGB, gl.UNSIGNED_BYTE,
-        new Uint8Array([0, 0, 0])
+    collectGlErrors('setup');
+
+    function createReadbackCanvas(width, height) {
+      if (typeof options.createCanvas2D === 'function') {
+        return options.createCanvas2D(width, height);
+      }
+      if (typeof wx !== 'undefined' && typeof wx.createOffscreenCanvas === 'function') {
+        let output;
+        try {
+          output = wx.createOffscreenCanvas({ type: '2d', width, height });
+        } catch (error) {
+          output = wx.createOffscreenCanvas(width, height);
+        }
+        output.width = width;
+        output.height = height;
+        return output;
+      }
+      if (typeof document !== 'undefined' && document.createElement) {
+        const output = document.createElement('canvas');
+        output.width = width;
+        output.height = height;
+        return output;
+      }
+      throw new Error('No 2D canvas is available for RGBA source decoding');
+    }
+
+    // Strategy P: obtain known, unpremultiplied RGBA bytes. Existing 2D
+    // canvases are read 1:1 directly; Images/ImageBitmaps are drawn 1:1 into
+    // a scratch 2D canvas with smoothing disabled, then read back.
+    function decodeSourceRgba(source) {
+      const size = sourceDimensions(source);
+      let context = null;
+      if (source && typeof source.getContext === 'function') {
+        try {
+          context = source.getContext('2d');
+        } catch (error) {
+          context = null;
+        }
+      }
+      if (!context) {
+        const scratch = createReadbackCanvas(size.width, size.height);
+        context = scratch && scratch.getContext('2d');
+        if (!context) {
+          throw new Error('The RGBA decoder could not create a 2D context');
+        }
+        context.imageSmoothingEnabled = false;
+        if (typeof context.setTransform === 'function') {
+          context.setTransform(1, 0, 0, 1, 0, 0);
+        }
+        context.clearRect(0, 0, size.width, size.height);
+        // The three-argument overload forbids scaling: the source is decoded
+        // at exactly its own width and height.
+        context.drawImage(source, 0, 0);
+      }
+      if (typeof context.getImageData !== 'function') {
+        throw new Error('The 2D context does not provide getImageData');
+      }
+      const image = context.getImageData(0, 0, size.width, size.height);
+      if (!image || !image.data || image.data.length < size.width * size.height * 4) {
+        throw new Error('The 2D RGBA readback returned too few bytes');
+      }
+      const pixels = new Uint8Array(size.width * size.height * 4);
+      pixels.set(image.data.subarray(0, pixels.length));
+      let alphaMin = 255;
+      let alphaMax = 0;
+      for (let offset = 3; offset < pixels.length; offset += 4) {
+        alphaMin = Math.min(alphaMin, pixels[offset]);
+        alphaMax = Math.max(alphaMax, pixels[offset]);
+      }
+      return {
+        width: size.width,
+        height: size.height,
+        pixels,
+        sourceType: describeSource(source),
+        alphaMin,
+        alphaMax,
+      };
+    }
+
+    // Probe passes are deliberately state-restoring: uploads happen while a
+    // preview, thumbnail, halo pass, or export target may be live.
+    function drawProbe(record, mode, point) {
+      const previousFramebuffer = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+      const previousProgram = gl.getParameter(gl.CURRENT_PROGRAM);
+      const previousViewport = Array.from(gl.getParameter(gl.VIEWPORT));
+      const previousActive = gl.getParameter(gl.ACTIVE_TEXTURE);
+      const previousActiveBinding = gl.getParameter(gl.TEXTURE_BINDING_2D);
+      gl.activeTexture(gl.TEXTURE0);
+      const previousZeroBinding = gl.getParameter(gl.TEXTURE_BINDING_2D);
+      const output = new Uint8Array(PROBE_SIZE * PROBE_SIZE * 4);
+      try {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, probeFramebuffer);
+        gl.viewport(0, 0, PROBE_SIZE, PROBE_SIZE);
+        gl.useProgram(probeProgram);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, (record || photoRecord).texture);
+        gl.uniform1i(probeUniforms.source, 0);
+        gl.uniform2f(probeUniforms.point, point ? point[0] : 0, point ? point[1] : 0);
+        gl.uniform1f(probeUniforms.mode, mode);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        gl.readPixels(0, 0, PROBE_SIZE, PROBE_SIZE, gl.RGBA, gl.UNSIGNED_BYTE, output);
+        collectGlErrors('diagnostic-probe', record ? record.name : 'solid');
+      } finally {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer);
+        gl.useProgram(previousProgram);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, previousZeroBinding);
+        gl.activeTexture(previousActive);
+        gl.bindTexture(gl.TEXTURE_2D, previousActiveBinding);
+        gl.viewport(
+          previousViewport[0], previousViewport[1],
+          previousViewport[2], previousViewport[3]
+        );
+      }
+      return output;
+    }
+
+    function sampleTexturePixel(record, x, y) {
+      const point = [(x + 0.5) / record.width, (y + 0.5) / record.height];
+      return Array.from(drawProbe(record, 1, point).subarray(0, 4));
+    }
+
+    function lutWhiteCorner(record, decoded) {
+      // The white corner belongs to blue slice N-1, not to the PNG's
+      // bottom-right texel: the final row can contain zero-filled unused tiles.
+      const metadata = record.metadata || {};
+      const n = Number(metadata.size);
+      const cols = Number(metadata.cols);
+      if (!Number.isFinite(n) || !Number.isFinite(cols) || n < 1 || cols < 1) {
+        throw new Error('LUT self-check requires size/cols metadata');
+      }
+      const blue = n - 1;
+      const x = (blue % cols) * n + n - 1;
+      const y = Math.floor(blue / cols) * n + n - 1;
+      const cpu = pixelAt(decoded.pixels, decoded.width, x, y);
+      return {
+        x,
+        y,
+        cpu,
+        cpuMean: (cpu[0] + cpu[1] + cpu[2]) / 3,
+      };
+    }
+
+    function isCpuDecodeSuspect(record, decoded, kind) {
+      if (kind === 'photo') {
+        return meanRgb(decoded.pixels) <= 1;
+      }
+      // Every valid shipped film LUT maps the native white node to a
+      // non-black print/scan value. Zero here means the 2D decode is suspect,
+      // even if the subsequent P upload faithfully uploads those zero bytes.
+      return lutWhiteCorner(record, decoded).cpuMean <= 2;
+    }
+
+    function uploadSelfCheck(record, decoded, kind, strategy, cpuDecodeSuspect) {
+      if (kind === 'photo') {
+        const readback = drawProbe(record, 0);
+        const readbackMean = meanRgb(readback);
+        const cpuMean = meanRgb(decoded.pixels);
+        const x = Math.floor(decoded.width / 2);
+        const y = Math.floor(decoded.height / 2);
+        const cpuCentre = pixelAt(decoded.pixels, decoded.width, x, y);
+        const gpuCentre = sampleTexturePixel(record, x, y);
+        const centreMaxDiff = maxPixelDifference(cpuCentre, gpuCentre);
+        const gpuNonBlack = readbackMean > 2;
+        const blackFailure = cpuMean > 2 && readbackMean <= 1;
+        // With a zero CPU decode there is no valid reference for P. Do not
+        // let zero==zero pass: only a non-black direct GPU readback proves D.
+        const ok = cpuDecodeSuspect
+          ? strategy === UPLOAD_STRATEGIES.DIRECT && gpuNonBlack
+          : !blackFailure;
+        return {
+          ok,
+          blackFailure,
+          cpuDecodeSuspect,
+          gpuNonBlack,
+          cpuMean,
+          readbackMean,
+          centreMaxDiff,
+          centre: { x, y, cpu: cpuCentre, gpu: gpuCentre },
+        };
+      }
+      const white = lutWhiteCorner(record, decoded);
+      const gpu = sampleTexturePixel(record, white.x, white.y);
+      const maxDiff = maxPixelDifference(white.cpu, gpu);
+      const gpuMean = (gpu[0] + gpu[1] + gpu[2]) / 3;
+      const gpuNonBlack = gpuMean > 2;
+      const blackFailure = white.cpuMean > 2 && gpuMean <= 1;
+      const ok = cpuDecodeSuspect
+        ? strategy === UPLOAD_STRATEGIES.DIRECT && gpuNonBlack
+        : !blackFailure && maxDiff <= 1;
+      return {
+        ok,
+        blackFailure,
+        cpuDecodeSuspect,
+        gpuNonBlack,
+        whiteCorner: { x: white.x, y: white.y, cpu: white.cpu, gpu, maxDiff },
+      };
+    }
+
+    function uploadRecord(record, source, kind, metadata, retryDecode) {
+      let activeSource = source;
+      let decoded = decodeSourceRgba(activeSource);
+      let decodeRetried = false;
+      let decodeRetryError = '';
+      record.metadata = metadata || null;
+      let cpuDecodeSuspect = isCpuDecodeSuspect(record, decoded, kind);
+      if (cpuDecodeSuspect && typeof retryDecode === 'function') {
+        // photo.js supplies a one-time redraw from the original, fully loaded
+        // canvas.createImage(). This distinguishes a bad first Canvas2D draw
+        // from a persistent getImageData/source-upload host failure.
+        try {
+          activeSource = retryDecode() || activeSource;
+          decoded = decodeSourceRgba(activeSource);
+          decodeRetried = true;
+          cpuDecodeSuspect = isCpuDecodeSuspect(record, decoded, kind);
+        } catch (error) {
+          decodeRetryError = String(error.message || error);
+          console.error(`${DIAG_LOG_PREFIX}[decode] retry failed: ${decodeRetryError}`);
+        }
+      }
+
+      record.width = decoded.width;
+      record.height = decoded.height;
+      record.format = 'RGBA8';
+      record.sourceType = decoded.sourceType;
+      record.alphaMin = decoded.alphaMin;
+      record.alphaMax = decoded.alphaMax;
+      record.source = activeSource;
+      record.pixels = decoded.pixels;
+      record.cpuDecodeSuspect = cpuDecodeSuspect;
+      record.photoAllBlack = false;
+      record.decodeRetried = decodeRetried;
+      record.decodeRetryError = decodeRetryError;
+      if (cpuDecodeSuspect) {
+        console.error(
+          `${DIAG_LOG_PREFIX}[decode] ${record.name} CPU decode is suspect ` +
+          `(all-black photo/zero LUT white); trying P and D`
+        );
+      }
+
+      const normalFirst = preferredUploadStrategy;
+      const normalSecond = normalFirst === UPLOAD_STRATEGIES.PIXELS
+        ? UPLOAD_STRATEGIES.DIRECT
+        : UPLOAD_STRATEGIES.PIXELS;
+      // A suspect decode always exercises P then D, even when D was sticky
+      // from an earlier source. Otherwise zero CPU bytes could keep passing P.
+      const strategies = cpuDecodeSuspect
+        ? [UPLOAD_STRATEGIES.PIXELS, UPLOAD_STRATEGIES.DIRECT]
+        : [normalFirst, normalSecond];
+      const attempts = [];
+
+      function attemptUpload(strategy, acceptAllBlack) {
+        collectGlErrors(`before-upload:${record.name}`, record.name);
+        let check = null;
+        let uploadError = null;
+        let errors = [];
+        try {
+          gl.activeTexture(record.unit);
+          gl.bindTexture(gl.TEXTURE_2D, record.texture);
+          setUnpackState(strategy === UPLOAD_STRATEGIES.DIRECT);
+          if (strategy === UPLOAD_STRATEGIES.PIXELS) {
+            gl.texImage2D(
+              gl.TEXTURE_2D, 0, gl.RGBA, decoded.width, decoded.height, 0,
+              gl.RGBA, gl.UNSIGNED_BYTE, decoded.pixels
+            );
+          } else {
+            gl.texImage2D(
+              gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, activeSource
+            );
+          }
+          errors = collectGlErrors(`upload-${strategy}:${record.name}`, record.name);
+          if (errors.length) {
+            throw new Error(`WebGL upload failed: ${errors.map((entry) => entry.name).join(',')}`);
+          }
+          check = uploadSelfCheck(record, decoded, kind, strategy, cpuDecodeSuspect);
+          if (!check.ok && !acceptAllBlack) {
+            throw new Error(cpuDecodeSuspect
+              ? 'CPU decode is suspect and this strategy did not prove non-black GPU content'
+              : 'Texture self-check did not match the CPU source');
+          }
+        } catch (error) {
+          uploadError = error;
+        }
+        const accepted = !uploadError;
+        const attempt = {
+          texture: record.name,
+          kind,
+          strategy,
+          ok: accepted,
+          acceptedAsAllBlack: accepted && acceptAllBlack,
+          cpuDecodeSuspect,
+          decodeRetried,
+          selfCheck: check,
+          error: uploadError ? String(uploadError.message || uploadError) : '',
+          glErrors: errors.map((entry) => entry.name),
+        };
+        attempts.push(attempt);
+        uploadAttempts.push(attempt);
+        if (uploadAttempts.length > 80) {
+          uploadAttempts.shift();
+        }
+        record.selfChecks.push(attempt);
+        if (record.selfChecks.length > 8) {
+          record.selfChecks.shift();
+        }
+        if (!accepted) {
+          console.error(
+            `${DIAG_LOG_PREFIX}[upload] ${record.name} ${strategy} failed: ${attempt.error}`
+          );
+        }
+        return attempt;
+      }
+
+      for (let index = 0; index < strategies.length; index += 1) {
+        const strategy = strategies[index];
+        const attempt = attemptUpload(strategy, false);
+        if (attempt.ok) {
+          record.status = 'ready';
+          record.strategy = strategy;
+          activeUploadStrategy = strategy;
+          if (cpuDecodeSuspect && strategy === UPLOAD_STRATEGIES.DIRECT) {
+            // D has independently proved real source content despite zero CPU
+            // bytes. Keep it sticky so later uploads do not silently return to P.
+            preferredUploadStrategy = UPLOAD_STRATEGIES.DIRECT;
+            console.error(
+              `${DIAG_LOG_PREFIX}[decode] ${record.name} recovered with direct upload; ` +
+              'cpuDecodeSuspect:true'
+            );
+          }
+          return {
+            strategy,
+            cpuDecodeSuspect,
+            photoAllBlack: false,
+            decodeRetried,
+          };
+        }
+        if (index === 0) {
+          preferredUploadStrategy = strategies[1];
+          uploadFallbacks.push({
+            texture: record.name,
+            from: strategy,
+            to: strategies[1],
+            reason: attempt.error,
+            cpuDecodeSuspect,
+          });
+        }
+      }
+
+      const bothBlack = cpuDecodeSuspect && attempts.length === 2 && attempts.every(
+        (attempt) => attempt.selfCheck && (
+          kind === 'photo'
+            ? attempt.selfCheck.readbackMean <= 2
+            : attempt.selfCheck.whiteCorner.gpu.slice(0, 3).every((channel) => channel <= 2)
+        )
+      );
+      if (kind === 'photo' && bothBlack) {
+        // A genuinely black photograph is legal. Accept P only after D also
+        // failed to prove content, and surface an explicit persistent warning.
+        record.photoAllBlack = true;
+        console.error(
+          `${DIAG_LOG_PREFIX}[decode] photoAllBlack:true; accepting black RGBA after D also read black`
+        );
+        const attempt = attemptUpload(UPLOAD_STRATEGIES.PIXELS, true);
+        if (attempt.ok) {
+          preferredUploadStrategy = UPLOAD_STRATEGIES.PIXELS;
+          activeUploadStrategy = UPLOAD_STRATEGIES.PIXELS;
+          record.preferredUploadStrategy = preferredUploadStrategy;
+          record.status = 'ready';
+          record.strategy = UPLOAD_STRATEGIES.PIXELS;
+          return {
+            strategy: UPLOAD_STRATEGIES.PIXELS,
+            cpuDecodeSuspect: true,
+            photoAllBlack: true,
+            decodeRetried,
+          };
+        }
+      }
+
+      record.status = 'failed';
+      throw new Error(
+        `Texture upload self-check failed for ${record.name}: ` +
+        attempts.map((entry) => `${entry.strategy}: ${entry.error}`).join('; ')
       );
     }
 
-    gl.activeTexture(gl.TEXTURE0);
-    configureTexture(photoTexture);
-    gl.activeTexture(gl.TEXTURE1);
-    configureTexture(lutTexture);
-    gl.activeTexture(gl.TEXTURE2);
-    configureTexture(extendedLutTexture);
-    gl.activeTexture(gl.TEXTURE3);
-    configureTexture(haloTextureA);
-    gl.activeTexture(gl.TEXTURE3);
-    configureTexture(haloTextureB);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, targetTexture);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-    function upload(textureUnit, texture, source) {
-      gl.activeTexture(textureUnit);
-      gl.bindTexture(gl.TEXTURE_2D, texture);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-      if (typeof gl.UNPACK_COLORSPACE_CONVERSION_WEBGL !== 'undefined') {
-        gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
-      }
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, source);
-    }
-
     function resize(width, height) {
-      if (canvas.width !== width || canvas.height !== height) {
-        canvas.width = width;
-        canvas.height = height;
+      const targetWidth = Math.max(1, Math.round(Number(width)));
+      const targetHeight = Math.max(1, Math.round(Number(height)));
+      if (!Number.isFinite(targetWidth) || !Number.isFinite(targetHeight)) {
+        throw new Error('Invalid canvas drawing-buffer dimensions');
       }
-      gl.viewport(0, 0, width, height);
+      if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+      }
+      gl.viewport(0, 0, targetWidth, targetHeight);
+      collectGlErrors('resize');
     }
 
-    function setPhoto(source) {
-      upload(gl.TEXTURE0, photoTexture, source);
+    function setPhoto(source, details, retryDecode) {
+      const result = uploadRecord(photoRecord, source, 'photo', null, retryDecode);
+      photoRecord.details = details || null;
       hasPhoto = true;
+      return result;
+    }
+
+    function setUploadStrategy(strategy) {
+      preferredUploadStrategy = normalizeUploadStrategy(strategy);
+      activeUploadStrategy = preferredUploadStrategy;
+    }
+
+    function reuploadTextures() {
+      if (photoRecord.source) {
+        uploadRecord(photoRecord, photoRecord.source, 'photo', photoRecord.metadata);
+      }
+      if (lutRecord.source) {
+        uploadRecord(lutRecord, lutRecord.source, 'lut', lutRecord.metadata);
+      }
+      if (extendedLutRecord.source) {
+        uploadRecord(
+          extendedLutRecord, extendedLutRecord.source, 'lut', extendedLutRecord.metadata
+        );
+      }
     }
 
     function validateLutMetadata(metadata) {
@@ -275,7 +901,7 @@
       if (!Number.isFinite(headroomEv) || headroomEv <= 0) {
         throw new Error('Extended LUT headroomEv must be positive');
       }
-      upload(gl.TEXTURE2, extendedLutTexture, source);
+      uploadRecord(extendedLutRecord, source, 'lut', metadata);
       return Object.assign(extended, { headroomEv });
     }
 
@@ -284,8 +910,9 @@
     // without it raises a clear error in draw().
     function setLut(source, metadata, extendedSource) {
       const base = validateLutMetadata(metadata);
-      lut = Object.assign(base, { extended: null, stockId: metadata.id || '' });
-      upload(gl.TEXTURE1, lutTexture, source);
+      const next = Object.assign(base, { extended: null, stockId: metadata.id || '' });
+      uploadRecord(lutRecord, source, 'lut', metadata);
+      lut = next;
       stockEffects = Effects.forStock(lut.stockId);
       if (metadata.extended && extendedSource) {
         lut.extended = uploadExtended(extendedSource, metadata.extended);
@@ -328,14 +955,11 @@
       if (width === haloWidth && height === haloHeight) {
         return;
       }
-      [haloTextureA, haloTextureB].forEach((texture) => {
-        gl.activeTexture(gl.TEXTURE3);
-        gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.texImage2D(
-          gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0,
-          gl.RGBA, gl.UNSIGNED_BYTE, null
-        );
+      [haloRecordA, haloRecordB].forEach((record) => {
+        allocateTexture(record, width, height);
       });
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, photoTexture);
       gl.bindFramebuffer(gl.FRAMEBUFFER, haloFramebufferA);
       gl.framebufferTexture2D(
         gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, haloTextureA, 0
@@ -355,6 +979,7 @@
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       haloWidth = width;
       haloHeight = height;
+      collectGlErrors('framebuffer:halo');
     }
 
     // The halation source is the linear camera exposure (sRGB decoded, camera
@@ -392,6 +1017,7 @@
       gl.bindTexture(gl.TEXTURE_2D, photoTexture);
       gl.uniform1f(haloUniforms.mode, 0);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      collectGlErrors('draw:halo-exposure');
 
       // 2. horizontal blur: haloTextureA -> haloTextureB
       gl.bindFramebuffer(gl.FRAMEBUFFER, haloFramebufferB);
@@ -402,6 +1028,7 @@
       gl.uniform2f(haloUniforms.sourceSize, width, height);
       gl.uniform2f(haloUniforms.blurDirection, 1, 0);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      collectGlErrors('draw:halo-horizontal');
 
       // 3. vertical blur: haloTextureB -> haloTextureA
       gl.bindFramebuffer(gl.FRAMEBUFFER, haloFramebufferA);
@@ -412,6 +1039,7 @@
       gl.uniform2f(haloUniforms.sourceSize, width, height);
       gl.uniform2f(haloUniforms.blurDirection, 0, 1);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      collectGlErrors('draw:halo-vertical');
 
       // Restore the framebuffer the caller had bound: the main pass may draw
       // into an offscreen target (the tiled export) instead of the canvas.
@@ -541,24 +1169,21 @@
       // into the target rectangle.
       gl.viewport(0, 0, target.width, target.height);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      collectGlErrors('draw:main');
     }
 
     function render(intensity) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, canvas.width, canvas.height);
       draw(intensity, adjustments, effects, defaultTarget(canvas.width, canvas.height));
+      collectGlErrors('render');
     }
 
     function ensureTarget(width, height) {
       if (width === targetWidth && height === targetHeight) {
         return;
       }
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, targetTexture);
-      gl.texImage2D(
-        gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0,
-        gl.RGBA, gl.UNSIGNED_BYTE, null
-      );
+      allocateTexture(targetRecord, width, height);
       gl.bindFramebuffer(gl.FRAMEBUFFER, targetFramebuffer);
       gl.framebufferTexture2D(
         gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, targetTexture, 0
@@ -569,6 +1194,7 @@
       }
       targetWidth = width;
       targetHeight = height;
+      collectGlErrors('framebuffer:target');
     }
 
     function flipRows(pixels, width, height) {
@@ -663,6 +1289,7 @@
       const rendered = now();
       const pixels = new Uint8Array(width * height * 4);
       gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      collectGlErrors('readPixels:render-target');
       const read = now();
       const topDown = settings.flipY !== false;
       if (topDown) {
@@ -691,8 +1318,185 @@
       return result;
     }
 
+    function summarizeTexture(record) {
+      return {
+        name: record.name,
+        unit: record.unit === null ? null : record.unit - gl.TEXTURE0,
+        width: record.width,
+        height: record.height,
+        format: record.format,
+        filter: record.filter,
+        wrap: record.wrap,
+        mipmaps: record.mipmaps,
+        status: record.status,
+        strategy: record.strategy || '',
+        sourceType: record.sourceType || '',
+        alphaMin: record.alphaMin === undefined ? null : record.alphaMin,
+        alphaMax: record.alphaMax === undefined ? null : record.alphaMax,
+        cpuDecodeSuspect: record.cpuDecodeSuspect === true,
+        photoAllBlack: record.photoAllBlack === true,
+        decodeRetried: record.decodeRetried === true,
+        decodeRetryError: record.decodeRetryError || '',
+        selfChecks: record.selfChecks.map((attempt) => JSON.parse(JSON.stringify(attempt))),
+      };
+    }
+
+    function getDiagnostics() {
+      return {
+        upload: {
+          preferredStrategy: preferredUploadStrategy,
+          activeStrategy: activeUploadStrategy,
+          attempts: uploadAttempts.map((attempt) => JSON.parse(JSON.stringify(attempt))),
+          fallbacks: uploadFallbacks.map((entry) => Object.assign({}, entry)),
+        },
+        textures: Object.keys(textureRecords).map((name) => summarizeTexture(textureRecords[name])),
+        glErrors: glErrors.map((entry) => Object.assign({}, entry)),
+      };
+    }
+
+    function runDiagnostics() {
+      const result = {};
+      function capture(name, callback) {
+        try {
+          result[name] = callback();
+        } catch (error) {
+          result[name] = { available: false, error: String(error.message || error) };
+          console.error(`${DIAG_LOG_PREFIX} ${name}: ${result[name].error}`);
+        }
+      }
+
+      capture('solidColour', () => {
+        const expected = [255, 0, 128, 255];
+        const readback = drawProbe(photoRecord, 2);
+        const pixel = Array.from(readback.subarray(0, 4));
+        let exact = true;
+        for (let offset = 0; offset < readback.length; offset += 1) {
+          if (readback[offset] !== expected[offset % 4]) {
+            exact = false;
+            break;
+          }
+        }
+        return { available: true, expected, pixel, exact, size: PROBE_SIZE };
+      });
+
+      capture('photoTexture', () => {
+        if (!hasPhoto || !photoRecord.pixels) {
+          return { available: false, reason: 'no-photo' };
+        }
+        const width = photoRecord.width;
+        const height = photoRecord.height;
+        const points = [
+          { name: 'topLeft', x: 0, y: 0 },
+          { name: 'topRight', x: width - 1, y: 0 },
+          { name: 'bottomLeft', x: 0, y: height - 1 },
+          { name: 'bottomRight', x: width - 1, y: height - 1 },
+          { name: 'centre', x: Math.floor(width / 2), y: Math.floor(height / 2) },
+        ];
+        const samples = points.map((point) => {
+          const cpu = pixelAt(photoRecord.pixels, width, point.x, point.y);
+          const gpu = sampleTexturePixel(photoRecord, point.x, point.y);
+          return Object.assign({}, point, {
+            cpu,
+            gpu,
+            maxDiff: maxPixelDifference(cpu, gpu),
+          });
+        });
+        return {
+          available: true,
+          strategy: photoRecord.strategy,
+          sourceType: photoRecord.sourceType,
+          cpuDecodeSuspect: photoRecord.cpuDecodeSuspect === true,
+          photoAllBlack: photoRecord.photoAllBlack === true,
+          decodeRetried: photoRecord.decodeRetried === true,
+          width,
+          height,
+          samples,
+          maxDiff: samples.reduce((worst, sample) => Math.max(worst, sample.maxDiff), 0),
+        };
+      });
+
+      capture('lutTexture', () => {
+        if (!lut || !lutRecord.pixels) {
+          return { available: false, reason: 'no-lut' };
+        }
+        const width = lutRecord.width;
+        const height = lutRecord.height;
+        const points = [
+          { name: 'blackCorner', x: 0, y: 0 },
+          {
+            name: 'whiteCorner',
+            x: ((lut.n - 1) % lut.cols) * lut.n + lut.n - 1,
+            y: Math.floor((lut.n - 1) / lut.cols) * lut.n + lut.n - 1,
+          },
+        ];
+        const samples = points.map((point) => {
+          const cpu = pixelAt(lutRecord.pixels, width, point.x, point.y);
+          const gpu = sampleTexturePixel(lutRecord, point.x, point.y);
+          return Object.assign({}, point, {
+            cpu,
+            gpu,
+            maxDiff: maxPixelDifference(cpu, gpu),
+          });
+        });
+        return {
+          available: true,
+          stockId: lut.stockId,
+          strategy: lutRecord.strategy,
+          sourceType: lutRecord.sourceType,
+          cpuDecodeSuspect: lutRecord.cpuDecodeSuspect === true,
+          width,
+          height,
+          samples,
+          maxDiff: samples.reduce((worst, sample) => Math.max(worst, sample.maxDiff), 0),
+        };
+      });
+
+      capture('fullShader', () => {
+        if (!hasPhoto || !lut || !photoRecord.pixels) {
+          return { available: false, reason: 'photo-and-lut-required' };
+        }
+        const common = {
+          width: 1,
+          height: 1,
+          adjustments: Adjustments.DEFAULTS,
+          effects: Effects.EFFECT_DEFAULTS,
+          flipY: false,
+        };
+        const one = renderTargetToPixels(Object.assign({}, common, {
+          target: defaultTarget(1, 1), intensity: 1, kind: 'diagnostic-full-1',
+        }));
+        const zero = renderTargetToPixels(Object.assign({}, common, {
+          target: defaultTarget(1, 1), intensity: 0, kind: 'diagnostic-full-0',
+        }));
+        const intensity1 = Array.from(one.pixels.subarray(0, 4));
+        const intensity0 = Array.from(zero.pixels.subarray(0, 4));
+        const cpuIntensity0 = bilinearAtHalf(
+          photoRecord.pixels, photoRecord.width, photoRecord.height
+        );
+        return {
+          available: true,
+          centrePixel: true,
+          intensity1,
+          intensity0,
+          cpuIntensity0,
+          intensity0MaxDiff: maxPixelDifference(cpuIntensity0, intensity0),
+        };
+      });
+      result.glErrors = glErrors.map((entry) => Object.assign({}, entry));
+      return result;
+    }
+
     function clearPhoto() {
+      if (destroyed) {
+        return;
+      }
       hasPhoto = false;
+      photoRecord.source = null;
+      photoRecord.pixels = null;
+      photoRecord.status = 'cleared';
+      photoRecord.cpuDecodeSuspect = false;
+      photoRecord.photoAllBlack = false;
+      photoRecord.decodeRetried = false;
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.clear(gl.COLOR_BUFFER_BIT);
     }
@@ -706,12 +1510,14 @@
         return;
       }
       destroyed = true;
-      gl.deleteTexture(photoTexture);
-      gl.deleteTexture(lutTexture);
-      gl.deleteTexture(extendedLutTexture);
-      gl.deleteTexture(targetTexture);
-      gl.deleteTexture(haloTextureA);
-      gl.deleteTexture(haloTextureB);
+      Object.keys(textureRecords).forEach((name) => {
+        const record = textureRecords[name];
+        gl.deleteTexture(record.texture);
+        record.pixels = null;
+        record.source = null;
+      });
+      gl.deleteFramebuffer(probeFramebuffer);
+      gl.deleteProgram(probeProgram);
       gl.deleteFramebuffer(targetFramebuffer);
       gl.deleteFramebuffer(haloFramebufferA);
       gl.deleteFramebuffer(haloFramebufferB);
@@ -738,6 +1544,10 @@
       render,
       renderToPixels,
       renderRegionToPixels,
+      setUploadStrategy,
+      reuploadTextures,
+      getDiagnostics,
+      runDiagnostics,
       clearPhoto,
       finish,
       destroy,
@@ -745,6 +1555,7 @@
   }
 
   return {
+    UPLOAD_STRATEGIES,
     computePreviewSize,
     computeFrameRect,
     createRenderer,

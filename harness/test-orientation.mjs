@@ -5,6 +5,7 @@ const require = createRequire(import.meta.url);
 const {
   EXIF_ORIENTATION_MODE,
   decideExifOrientation,
+  drawOriented,
   orientationTransform,
   swapsDimensions,
 } = require('../utils/photo.js');
@@ -117,4 +118,50 @@ assert.equal(square.engineApplied, false);
 assert.equal(square.transformOrientation, 'right');
 assert.throws(() => decide(1, false, 'unknown'), /Unknown EXIF orientation mode/);
 
-console.log('EXIF orientation tests: PASS (16 auto cases, 16 overrides, 8 corner matrices, square edge case)');
+// The suspect-decode retry redraws from the original Image with the same
+// transform, and the caller can release that Image after the upload decision.
+{
+  const previousWx = globalThis.wx;
+  const drawCalls = [];
+  const image = { src: 'wxfile://photo.jpg', width: WIDTH, height: HEIGHT };
+  const context = {
+    imageSmoothingEnabled: true,
+    setTransform() {},
+    clearRect() {},
+    drawImage(...args) {
+      drawCalls.push(args);
+    },
+  };
+  const output = {
+    width: 0,
+    height: 0,
+    getContext: (type) => type === '2d' ? context : null,
+  };
+  globalThis.wx = { createOffscreenCanvas: () => output };
+  try {
+    const prepared = drawOriented({
+      source: image,
+      sourceWidth: WIDTH,
+      sourceHeight: HEIGHT,
+      decision: { transformOrientation: 'up' },
+    }, { width: WIDTH, height: HEIGHT });
+    assert.equal(drawCalls.length, 1);
+    assert.strictEqual(drawCalls[0][0], image);
+    assert.strictEqual(prepared.retryDecode(), output);
+    assert.equal(drawCalls.length, 2);
+    assert.strictEqual(drawCalls[1][0], image);
+    assert.equal(image.src, 'wxfile://photo.jpg', 'Image stays alive for the retry');
+    prepared.release();
+    prepared.release();
+    assert.equal(image.src, '');
+    assert.throws(() => prepared.retryDecode(), /already been released/);
+  } finally {
+    if (previousWx === undefined) {
+      delete globalThis.wx;
+    } else {
+      globalThis.wx = previousWx;
+    }
+  }
+}
+
+console.log('EXIF orientation tests: PASS (16 auto cases, 16 overrides, 8 corner matrices, square edge case, suspect-decode redraw/release)');

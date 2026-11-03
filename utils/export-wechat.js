@@ -118,6 +118,8 @@
         canvas: prepared.canvas,
         width: prepared.width,
         height: prepared.height,
+        retryDecode: prepared.retryDecode,
+        release: prepared.release,
       })),
 
       // --- renderer --------------------------------------------------------
@@ -136,7 +138,18 @@
           fragmentSource: ShaderModule.lutFragment,
           haloFragmentSource: ShaderModule.haloFragment,
         });
-        renderer.setPhoto(context.photo.canvas);
+        try {
+          renderer.setPhoto(context.photo.canvas, {
+            type: 'offscreen-2d-canvas',
+            width: context.photo.width,
+            height: context.photo.height,
+            pipeline: 'export',
+          }, context.photo.retryDecode);
+        } finally {
+          if (typeof context.photo.release === 'function') {
+            context.photo.release();
+          }
+        }
         return settings.getStockLut(context.stockId).then((images) => {
           renderer.setLut(images.base, images.stock, images.extended);
           renderer.setAdjustments(context.adjustments);
@@ -144,8 +157,8 @@
           return {
             renderRegionToPixels: (request) => renderer.renderRegionToPixels(request),
             release: () => {
-              renderer.destroy();
               renderer.clearPhoto();
+              renderer.destroy();
             },
           };
         });

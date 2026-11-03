@@ -1,6 +1,6 @@
 <view class="page">
   <view class="header">
-    <view class="title">SPEKTRAFILM</view>
+    <view class="title" bindlongpress="onOpenDiagnostics">SPEKTRAFILM</view>
     <view class="subtitle">胶片色彩 · 本机 WebGL 预览</view>
   </view>
 
@@ -331,6 +331,10 @@
             <text class="about-key">版本</text>
             <text class="about-value">{{version}}</text>
           </view>
+          <view class="about-row">
+            <text class="about-key">设备诊断</text>
+            <button class="about-diagnostic" bindtap="onOpenDiagnostics">诊断</button>
+          </view>
           <view class="about-note">颗粒与光晕为近似效果（详见 docs/EFFECTS.md）；扩散滤镜、耀光、锐化仍未包含。</view>
         </view>
       </view>
@@ -358,5 +362,29 @@
       bindtap="onChoosePhoto"
     >拍照</button>
     <button wx:if="{{hasPhoto}}" class="clear-button" bindtap="onClearPhoto">清除</button>
+  </view>
+
+  <view wx:if="{{diagnosticsOpen}}" class="diagnostics-modal">
+    <view class="diagnostics-panel">
+      <view class="diagnostics-header">
+        <text class="diagnostics-title">设备诊断</text>
+        <button class="diagnostics-close" bindtap="onCloseDiagnostics">关闭</button>
+      </view>
+      <scroll-view class="diagnostics-scroll" scroll-y>
+        <text class="diagnostics-text" selectable>{{diagnosticsText || '正在运行诊断…'}}</text>
+      </scroll-view>
+      <view class="diagnostics-actions">
+        <button
+          class="diagnostics-button"
+          disabled="{{!diagnosticsAvailable}}"
+          bindtap="onCopyDiagnostics"
+        >复制</button>
+        <button
+          class="diagnostics-button"
+          disabled="{{diagnosticsRunning}}"
+          bindtap="onRerunDiagnostics"
+        >重新运行</button>
+      </view>
+    </view>
   </view>
 </view>

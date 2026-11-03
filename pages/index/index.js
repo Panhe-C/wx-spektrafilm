@@ -8,6 +8,7 @@ const thumbnails = require('../../utils/thumbnail.js');
 const appInfo = require('../../utils/app-info.js');
 const { createExportHost } = require('../../utils/export-wechat.js');
 const { exportImage } = require('../../utils/export.js');
+const Diagnostics = require('../../utils/diagnostics.js');
 
 const DEFAULT_ADJUSTMENTS = ui.ADJUSTMENT_DEFAULTS;
 // The spatial effects are approximate. They are on by default at their
@@ -64,6 +65,10 @@ Page({
     exportProgress: 0,
     version: appInfo.version,
     sourceUrl: appInfo.sourceUrl,
+    diagnosticsOpen: false,
+    diagnosticsRunning: false,
+    diagnosticsText: '',
+    diagnosticsAvailable: false,
   },
 
   onLoad() {
@@ -95,6 +100,9 @@ Page({
     this.extendedPromise = null;
     this.observer = null;
     this.visibleStockIds = Object.create(null);
+    this.diagnosticsRunning = false;
+    this.canvasNodeSize = null;
+    this.photoSourceInfo = { type: 'none' };
     try {
       const system = wx.getSystemInfoSync();
       this.devicePixelRatio = system.pixelRatio || 1;
@@ -195,12 +203,22 @@ Page({
             throw new Error('Preview canvas node was not found');
           }
           this.canvas = result[0].node;
+          this.canvasNodeSize = {
+            width: Number(result[0].width) || 1,
+            height: Number(result[0].height) || 1,
+          };
           this.renderer = createRenderer(this.canvas, {
             vertexSource: shaders.lutVertex,
             fragmentSource: shaders.lutFragment,
             haloFragmentSource: shaders.haloFragment,
           });
-          this.renderer.resize(1, 1);
+          // Empty state: the drawing buffer follows node CSS size × DPR.
+          // Loaded state deliberately switches to one buffer pixel per
+          // prepared photo pixel (see loadPhoto), with CSS doing only contain.
+          this.renderer.resize(
+            Math.max(1, Math.round(this.canvasNodeSize.width * this.devicePixelRatio)),
+            Math.max(1, Math.round(this.canvasNodeSize.height * this.devicePixelRatio))
+          );
           this.renderer.setEffects(this.effects);
           this.setData({ ready: true, error: '' });
         } catch (error) {
@@ -291,22 +309,53 @@ Page({
         maxTextureSize: this.renderer.maxTextureSize,
       });
       if (operation !== this.operationId) {
+        prepared.release();
         return;
       }
       this.photoSize = { width: prepared.width, height: prepared.height };
       this.photoSrc = src;
+      this.photoSourceInfo = {
+        type: 'offscreen-2d-canvas',
+        decodedType: 'canvas.createImage-onload',
+        width: prepared.width,
+        height: prepared.height,
+        sourceWidth: prepared.sourceWidth,
+        sourceHeight: prepared.sourceHeight,
+        orientation: prepared.orientation,
+        engineApplied: prepared.engineApplied,
+      };
       await new Promise((resolve) => {
         this.setData({ hasPhoto: true }, resolve);
       });
       if (operation !== this.operationId) {
+        prepared.release();
         return;
       }
       await this.fitCanvas(prepared.width, prepared.height);
       if (operation !== this.operationId) {
+        prepared.release();
         return;
       }
+      // Loaded drawing buffer = oriented photo texture size. Set both canvas
+      // dimensions and viewport before upload/draw; never rely on CSS size.
       this.renderer.resize(prepared.width, prepared.height);
-      this.renderer.setPhoto(prepared.canvas);
+      let photoUpload;
+      try {
+        photoUpload = this.renderer.setPhoto(
+          prepared.canvas, this.photoSourceInfo, prepared.retryDecode
+        );
+      } finally {
+        prepared.release();
+      }
+      Object.assign(this.photoSourceInfo, {
+        uploadStrategy: photoUpload.strategy,
+        cpuDecodeSuspect: photoUpload.cpuDecodeSuspect,
+        photoAllBlack: photoUpload.photoAllBlack,
+        decodeRetried: photoUpload.decodeRetried,
+      });
+      if (photoUpload.photoAllBlack) {
+        this.setData({ error: '照片读取为全黑，可在 关于 → 诊断 查看' });
+      }
       this.renderer.render(0);
 
       this.transition('decoded');
@@ -883,6 +932,87 @@ Page({
 
   // --- panel toggles and about --------------------------------------------
 
+  queryCanvasNodeSize() {
+    return new Promise((resolve) => {
+      wx.createSelectorQuery()
+        .select('#previewCanvas')
+        .boundingClientRect()
+        .exec((result) => {
+          const rect = result && result[0];
+          resolve(rect ? { width: rect.width, height: rect.height } : this.canvasNodeSize);
+        });
+    });
+  },
+
+  async runDiagnosticSuite(options) {
+    const settings = options || {};
+    if (this.diagnosticsRunning) {
+      return null;
+    }
+    this.diagnosticsRunning = true;
+    if (!settings.fromError) {
+      this.setData({ diagnosticsRunning: true });
+    }
+    try {
+      const nodeSize = await this.queryCanvasNodeSize();
+      const outcome = Diagnostics.runDiagnostics({
+        renderer: this.renderer,
+        canvas: this.canvas,
+        nodeSize,
+        pixelRatio: this.devicePixelRatio,
+        photo: this.photoSourceInfo,
+        app: {
+          name: appInfo.name,
+          version: appInfo.version,
+          appId: appInfo.appId,
+        },
+      });
+      this.setData({
+        diagnosticsText: outcome.text,
+        diagnosticsAvailable: true,
+      });
+      if (settings.fromError && settings.bannerMessage &&
+        this.data.error === settings.bannerMessage) {
+        this.setData({
+          error: `${settings.bannerMessage}\n已生成诊断，可在 关于 → 诊断 查看`,
+        });
+      }
+      return outcome;
+    } catch (error) {
+      console.error('[wx-spektrafilm][diag] suite failed', error);
+      return null;
+    } finally {
+      this.diagnosticsRunning = false;
+      this.setData({ diagnosticsRunning: false });
+    }
+  },
+
+  onOpenDiagnostics() {
+    this.setData({ aboutOpen: true, diagnosticsOpen: true });
+    this.runDiagnosticSuite();
+  },
+
+  onRerunDiagnostics() {
+    this.runDiagnosticSuite();
+  },
+
+  onCloseDiagnostics() {
+    this.setData({ diagnosticsOpen: false });
+  },
+
+  onCopyDiagnostics() {
+    const text = this.data.diagnosticsText || Diagnostics.getLastText();
+    if (!text) {
+      wx.showToast({ title: '诊断尚未生成', icon: 'none' });
+      return;
+    }
+    wx.setClipboardData({
+      data: text,
+      success: () => wx.showToast({ title: '诊断已复制', icon: 'none' }),
+      fail: () => wx.showToast({ title: '复制失败', icon: 'none' }),
+    });
+  },
+
   onToggleAdjustments() {
     this.setData({ adjustOpen: !this.data.adjustOpen });
   },
@@ -918,6 +1048,7 @@ Page({
     this.stockRequestId += 1;
     this.photoSize = null;
     this.photoSrc = '';
+    this.photoSourceInfo = { type: 'none' };
     this.activeStock = null;
     this.comparing = false;
     this.resetThumbnails();
@@ -950,9 +1081,10 @@ Page({
             const scale = Math.min(rect.width / width, rect.height / height);
             this.setData({
               canvasStyle: `width: ${(width * scale).toFixed(3)}px; height: ${(height * scale).toFixed(3)}px;`,
-            });
+            }, resolve);
+          } else {
+            resolve();
           }
-          resolve();
         });
     });
   },
@@ -980,5 +1112,6 @@ Page({
   showError(message) {
     this.setData({ error: message, busy: false, busyText: '', comparing: false });
     this.comparing = false;
+    this.runDiagnosticSuite({ fromError: true, bannerMessage: message });
   },
 });

@@ -24,6 +24,8 @@ The code in this repository is licensed under GPLv3 (see LICENSE).
 
 The index page supports album/camera selection, EXIF-upright bounded resizing, a contain/letterbox
 WebGL preview, all 11 stocks, intensity 0–100%, press-and-hold original comparison, and clear.
+Photo and LUT sources prefer validated RGBA-byte uploads, with an automatic direct-source fallback;
+this avoids the silent black offscreen-canvas upload seen in the iPhone report.
 The LUT PNGs and manifests ship in the **main package** under `subpackages/luts/` (the directory name is
 kept only for path stability). After the first pick, `ensureLuts()` loads the local CommonJS manifest
 synchronously; there is no `wx.loadSubpackage` step or LUT-package network dependency. Decoded LUTs
@@ -49,7 +51,9 @@ are cached in memory. See `docs/RENDERER.md` and `docs/ORIENTATION.md` for imple
   include the effects.
 - **About section**: the spektrafilm credit (Andrea Volpato), the project URL, the licence split
   (GPLv3 code, CC BY-SA 4.0 LUT data), the version, and the note that the grain and the halation
-  are approximations and that diffusion filters, glare and sharpening are still missing.
+  are approximations and that diffusion filters, glare and sharpening are still missing. Its hidden
+  **诊断** entry (also available by long-pressing the title) runs and copies on-device GL/upload
+  diagnostics; see `docs/DEVICE_DEBUG.md`.
 - The page structure, the phase state machine, the thumbnail path and the real-device checklist
   are documented in `docs/UI.md`.
 
@@ -128,7 +132,12 @@ The harness expects `/workspace/testphotos/p*.jpg`, Chrome at `/usr/bin/google-c
 Python scientific environment described in `docs/RENDERER.md`. It runs the orientation policy and
 matrix unit tests, the adjustment-mapping unit tests, the UI-state unit tests, the effect-model unit
 tests, the export unit tests (the planner and the permission flow with a mock `wx`) and the
-page-wiring tests before launching Chrome. It writes `harness/out/report.{json,md}`, per-pair shader/Python/diff PNGs, per-adjustment
+page-wiring and pure diagnostics-formatter tests before launching Chrome. The browser upload suite
+forces both RGBA-byte (P) and direct-source (D) paths, compares full output within one code, injects
+GPU-zero and zero-`getImageData()` photo/LUT cases to verify suspect-decode fallback and the
+photo-only all-black outcome, and asserts the same solid/photo/LUT/full-shader probes exposed on
+device. It writes `harness/out/diagnostics/report.{json,txt}`. The main harness
+writes `harness/out/report.{json,md}`, per-pair shader/Python/diff PNGs, per-adjustment
 PNGs, thumbnails, `harness/out/contact-{shader,adjust,thumbs}.jpg`, and — from the spatial-effect
 suite — `harness/out/contact-effects.jpg`, `harness/out/grain-compare.jpg` and
 `harness/out/effects-report.{json,md}`, and — from the export suite —
@@ -139,8 +148,10 @@ headless checks do not replace WeChat DevTools or physical-device testing.
 The final on-box full run passed **66/66 default pairs**, **11/11 intensity checks**, **61/61
 adjustment pairs**, and **11/11 thumbnails**. Worst default mean ΔE2000 was **0.00052035**, worst
 default maximum **1.21046424**, worst adjustment mean **0.00044731**, and worst adjustment maximum
-**1.20630550**. Median render/readback was **30.9 ms**, median thumbnail setLut+render+readback
-**1.20 ms**, and median full-preview stock switch **23.9 ms**. The generated `harness/out/report.md`
+**1.20630550**. Median render/readback was **29.65 ms**, median thumbnail setLut+render+readback
+**2.40 ms**, and median full-preview stock switch **32.40 ms**. The upload/diagnostic suite also
+passed: P versus D differed by **0 codes over 6,144 pixels**, injected zero photo/LUT uploads fell
+back to P, solid colour was exact, and photo/LUT probes were **0-code** maxima. The generated `harness/out/report.md`
 contains the per-stock and per-photo tables. These are headless measurements, not phone timings.
 
 The effect suite (identity at strength 0, determinism, scale invariance, the NumPy mirror, the
@@ -152,7 +163,7 @@ permission flow with a mock `wx`, and the tiled render versus the single-pass re
 
 - `app.js`, `app.json`, `app.wxss` — Mini Program entry
 - `pages/` — native picker, preset picker, adjustments panel and about page
-- `utils/`, `renderer/` — shared WebGL renderer, adjustment mapping, spatial-effect model, UI state policy, thumbnail export, generated GLSL module, photo preparation, export planner and WeChat export host, fallback stub
+- `utils/`, `renderer/` — shared WebGL renderer, robust P/D uploads, diagnostics, adjustment mapping, spatial-effect model, UI state policy, thumbnail export, generated GLSL module, photo preparation, export planner and WeChat export host, fallback stub
 - `shaders/` — canonical WebGL1 GLSL sources shared with the headless harness
 - `subpackages/luts/` — main-package LUT PNGs plus generated, synchronized `luts.js` / `luts.json` manifests
 - `harness/` — Puppeteer/Chrome and NumPy numerical verification (not shipped in the app)
@@ -176,8 +187,8 @@ unimplemented. `docs/LIMITATIONS.md` details this boundary and the exposure/tona
 The tiled-grid PNG layout and shader half-texel/trilinear contract are in `docs/LUT_FORMAT.md`.
 The shipped assets use **N=33** for the native look plus an **N=49** two-stop extended-range cube
 per stock, in **1,069,130 bytes (1044.1 KiB)** for the complete LUT folder including both generated
-manifests (asset budget 1,200,000 bytes). These assets are included in the **1,233,647-byte
-(1204.7 KiB) main package**, below the 2 MiB limit. Exact pixel-pooled
+manifests (asset budget 1,200,000 bytes). These assets are included in the **1,284,634-byte
+(1254.5 KiB) main package**, below the 2 MiB limit. Exact pixel-pooled
 natural-image error versus full `simulate()` is **0.2829 mean / 0.6140 p95 / 0.8296 p99 /
 1.6896 maximum dE2000**; every stock passes the mean<1.0 and p95<3.0 criteria. The camera-side
 EV and white-balance paths measure **0.1479–0.1882 mean / 0.3219–0.3966 p95 dE2000** over the

@@ -52,11 +52,38 @@ the letterbox. A 1280×854 photo texture is about 4.17 MiB as RGBA in a typical 
 rather than a multi-megapixel 12 MP texture. Decoding the source JPEG still requires temporary
 source memory.
 
-All three input textures use WebGL1 `UNSIGNED_BYTE`, `LINEAR` minification/magnification,
-`CLAMP_TO_EDGE`, and no mipmaps. The LUT upload internal format is `RGB` (RGB888). Dithering, depth
-testing, and blending are disabled. DOM/canvas colour-space conversion and unpack Y-flip are
-disabled where the host exposes those controls. The vertex shader flips V for the top-row-first
-photo canvas; LUT V remains in native PNG row order because green increases down each tile.
+All input and target textures use WebGL1 `UNSIGNED_BYTE`, `LINEAR`
+minification/magnification, `CLAMP_TO_EDGE`, and no mipmaps. Every texture is created by one helper
+and starts as a complete opaque 1×1 RGBA placeholder, including unused sampler units and the halo
+ping-pong targets. Reallocating a texture does not reset its filters or wrap modes. Dithering, depth
+testing, and blending are disabled. Unpack Y-flip and premultiply are disabled; direct-source
+colour-space conversion is disabled where the host exposes that control. The vertex shader flips V
+for the top-row-first photo bytes; LUT V remains in native PNG row order because green increases
+down each tile.
+
+### Robust source upload ladder
+
+The renderer never assumes that a host Canvas2D/Image accepted by six-argument `texImage2D` actually
+produced nonzero texels. **Strategy P is preferred**: an existing 2D canvas is read 1:1 with
+`getImageData`; an Image/ImageBitmap is drawn 1:1, without smoothing or scaling, into a scratch 2D
+canvas and read back. The resulting `Uint8Array` is uploaded with the nine-argument RGBA/
+`UNSIGNED_BYTE` overload. **Strategy D** is the direct RGBA host-source fallback.
+
+After every photo/base-LUT/extended-LUT upload, a state-restoring probe pass checks GPU content
+against retained CPU bytes. Photos use a 4×4 passthrough mean and a centre texel. LUTs use the white
+corner of blue slice N−1 (computed from metadata, not an unused PNG padding tile). A non-black source
+that reads back near zero, a LUT mismatch over one code, or a GL error switches to the other strategy
+and retries. Zero CPU readback is itself suspect: photo mean ≤1 or LUT white mean ≤2 forces both P and
+D; a non-black D result becomes sticky. For photos, `photo.js` first redraws once from the original
+Image, and both-black P/D is accepted with `photoAllBlack` plus a page warning. LUTs never use that
+black-photo exception. Attempts, `cpuDecodeSuspect`, fallbacks, source type/size, alpha range, texture
+parameters, and GL errors are retained for `utils/diagnostics.js`. CPU RGBA is retained for later probes;
+this adds about
+4.17 MiB for a 1280×854 photo, in addition to its GPU texture.
+
+The drawing-buffer policy is explicit: a loaded preview has one buffer pixel per prepared photo
+pixel, with dimensions and viewport set before upload/draw; CSS performs only `contain` fitting. The
+empty preview uses node CSS size × DPR. See `docs/DEVICE_DEBUG.md` for the iPhone investigation.
 
 The LUT uniforms are:
 
@@ -205,6 +232,19 @@ The two cubes of a stock are independent uploads:
   cube. The harness contract check exercises exactly this sequence: select without the extended
   cube, expect the clear failure, upload it, and expect the draw to succeed.
 
+## On-device diagnostics
+
+`utils/diagnostics.js` combines GL version/vendor/renderer (including unmasked values when exposed),
+context attributes, texture limits, fragment-highp format, extensions, canvas/node/buffer/viewport
+sizes, source/upload state, and per-texture records. Its GL probes are implemented by the shared
+renderer: a code-exact `(255,0,128,255)` shader draw, photo centre + four corners against CPU bytes,
+base-LUT black/white nodes against CPU bytes, and full-shader centre pixels at intensity 1 and 0.
+Probe passes restore the previous program, framebuffer, viewport, and texture bindings. The pure text
+formatter is unit-tested in Node, and the numeric GL suite is asserted in SwiftShader.
+
+The Mini Program exposes the report through **关于 → 诊断** or a title long-press. It can be copied
+with `wx.setClipboardData` and rerun. See `docs/DEVICE_DEBUG.md` for interpretation.
+
 ## Headless verification
 
 From the repository root:
@@ -218,10 +258,13 @@ npm test
 The command requires `/usr/bin/google-chrome`, the six non-repository phone photos in
 `/workspace/testphotos/p*.jpg`, and the Python scientific environment (`numpy`, Pillow, and
 scikit-image; `/workspace/venv-sf/bin/python` on the build box). `PYTHON` and `TEST_PHOTOS` can
-override those two paths. `npm test` first runs the plain-Node EXIF policy/matrix suite and the
-adjustment-mapping unit suite, then starts Chrome. `npm run test:smoke` runs only one browser pair
-and is not a substitute for `npm test`. `npm run study:ev` re-runs the separate physical
-faithfulness study against full `simulate()`; it is resumable and is not part of `npm test`.
+override those two paths. `npm test` first runs the plain-Node EXIF policy/matrix suite, adjustment-mapping suite, and pure
+diagnostics formatter, then starts Chrome. `test-upload-strategies.mjs` forces both P and D for the
+photo/base/extended LUT, requires full-render agreement within one code, injects zero-filled direct
+uploads and zero `getImageData()` results to verify GPU/CPU failure fallback (including sticky D and
+photo-only `photoAllBlack`), and asserts the diagnostic solid/photo/LUT/full-shader probes. `npm run test:smoke` runs only one browser pair and is not a substitute for `npm test`.
+`npm run study:ev` re-runs the separate physical faithfulness study against full `simulate()`; it is
+resumable and is not part of `npm test`.
 
 Chrome is launched with `--use-gl=swiftshader`, `--enable-webgl`, `--ignore-gpu-blocklist`, and
 `--headless=new`. The browser downscales each photo to a long edge of 1280 with the shared sizing
@@ -248,10 +291,13 @@ performance measurement.
 The final on-box full run passed **66/66 default pairs**, **11/11 intensity checks**, **61/61
 adjustment pairs**, and **11/11 thumbnails**. The worst default mean ΔE2000 was **0.0005203500**
 (`velvia100/p237`) and the worst default maximum was **1.2104642391** (`portra160/p1015`); the worst
-adjustment mean was **0.0004473071** and the worst adjustment maximum **1.2241792679**. Median
-render/readback time was **18.55 ms**, median thumbnail `setLut`+render+readback **1.20 ms**, and
-median full-preview stock switch **18.20 ms**. Intensity 0 was code-exact; intensity 0.5 stayed
-within one code. See `harness/out/report.md` for the full per-stock and per-pair tables.
+adjustment mean was **0.0004473071** and the worst adjustment maximum **1.2063055038**. Median
+render/readback time was **29.65 ms**, median thumbnail `setLut`+render+readback **2.40 ms**, and
+median full-preview stock switch **32.40 ms**. Intensity 0 was code-exact; intensity 0.5 stayed
+within one code. The separate upload suite passed P/D with **0-code maximum difference over 6,144
+pixels**, recovered both injected zero uploads through P, and measured solid/photo/LUT maxima of
+**0/0/0 codes** (full-shader intensity 0: **1 code**). See `harness/out/report.md` and
+`harness/out/diagnostics/report.txt` for the full tables and probe report.
 
 ## Performance expectation and fallback boundary
 

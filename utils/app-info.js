@@ -2,6 +2,7 @@
 module.exports = {
   name: 'wx-spektrafilm',
   version: '0.4.0',
+  appId: 'wxa4be938db07a4bb4',
   stage: 'Phase 4b',
   sourceUrl: 'https://github.com/andreavolpato/spektrafilm',
   licenceCode: 'GPLv3',

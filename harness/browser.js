@@ -510,6 +510,229 @@
     };
   }
 
+  async function verifyUploadStrategiesAndDiagnostics() {
+    const stock = stockById('portra400');
+    const images = await ensureExtended(stock.id);
+    renderer.setLut(images.base, stock, images.extended);
+    renderer.setAdjustments(DEFAULTS);
+    renderer.setEffects(SpektrafilmEffects.EFFECT_DEFAULTS);
+    const renderOptions = {
+      width: 96,
+      height: 64,
+      intensity: 1,
+      adjustments: DEFAULTS,
+      effects: SpektrafilmEffects.EFFECT_DEFAULTS,
+    };
+
+    renderer.setUploadStrategy('pixels');
+    renderer.reuploadTextures();
+    const pixelResult = renderer.renderToPixels(renderOptions);
+    const pixelState = renderer.getDiagnostics();
+
+    renderer.setUploadStrategy('direct');
+    renderer.reuploadTextures();
+    const directResult = renderer.renderToPixels(renderOptions);
+    const directState = renderer.getDiagnostics();
+    let maxDiff = 0;
+    let differing = 0;
+    for (let offset = 0; offset < pixelResult.pixels.length; offset += 4) {
+      let pixelDiff = 0;
+      for (let channel = 0; channel < 3; channel += 1) {
+        const difference = Math.abs(
+          pixelResult.pixels[offset + channel] - directResult.pixels[offset + channel]
+        );
+        pixelDiff = Math.max(pixelDiff, difference);
+        maxDiff = Math.max(maxDiff, difference);
+      }
+      if (pixelDiff > 0) {
+        differing += 1;
+      }
+    }
+
+    // Force the direct source overload to upload zeroes only for the photo
+    // canvas. The CPU readback is deliberately untouched, so the self-check
+    // must detect black and immediately retry through strategy P.
+    renderer.setUploadStrategy('direct');
+    const gl = renderer.gl;
+    const originalTexImage2D = gl.texImage2D;
+    let mockedZeroUploads = 0;
+    gl.texImage2D = function mockedTexImage2D(...args) {
+      if (args.length === 6 && args[5] === inputCanvas) {
+        mockedZeroUploads += 1;
+        return originalTexImage2D.call(
+          gl, args[0], args[1], args[2], inputCanvas.width, inputCanvas.height, 0,
+          gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(inputCanvas.width * inputCanvas.height * 4)
+        );
+      }
+      return originalTexImage2D.apply(gl, args);
+    };
+    try {
+      renderer.setPhoto(inputCanvas);
+    } finally {
+      gl.texImage2D = originalTexImage2D;
+    }
+    const fallbackState = renderer.getDiagnostics();
+    const photo = fallbackState.textures.find((texture) => texture.name === 'photo');
+
+    // Repeat the injected zero upload for the base LUT. Its white probe is
+    // computed in the real b=N-1 tile, so an all-zero texture cannot pass.
+    renderer.setUploadStrategy('direct');
+    const originalLutTexImage2D = gl.texImage2D;
+    let mockedZeroLutUploads = 0;
+    gl.texImage2D = function mockedLutTexImage2D(...args) {
+      if (args.length === 6 && args[5] === images.base) {
+        mockedZeroLutUploads += 1;
+        return originalLutTexImage2D.call(
+          gl, args[0], args[1], args[2], images.base.width, images.base.height, 0,
+          gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(images.base.width * images.base.height * 4)
+        );
+      }
+      return originalLutTexImage2D.apply(gl, args);
+    };
+    try {
+      renderer.setLut(images.base, stock, images.extended);
+    } finally {
+      gl.texImage2D = originalLutTexImage2D;
+    }
+    const lutFallbackState = renderer.getDiagnostics();
+    const lutTexture = lutFallbackState.textures.find((texture) => texture.name === 'lut');
+
+    // New regression: the CPU Canvas2D readback itself is zero, while the
+    // direct upload still sees the real canvas. Zero==zero must not accept P.
+    renderer.setUploadStrategy('pixels');
+    const contextPrototype = CanvasRenderingContext2D.prototype;
+    const originalGetImageData = contextPrototype.getImageData;
+    contextPrototype.getImageData = function suspectPhotoReadback(...args) {
+      if (this.canvas === inputCanvas) {
+        return { data: new Uint8ClampedArray(inputCanvas.width * inputCanvas.height * 4) };
+      }
+      return originalGetImageData.apply(this, args);
+    };
+    let suspectPhotoStatus;
+    try {
+      suspectPhotoStatus = renderer.setPhoto(inputCanvas);
+    } finally {
+      contextPrototype.getImageData = originalGetImageData;
+    }
+    const suspectPhotoState = renderer.getDiagnostics();
+    const suspectPhoto = suspectPhotoState.textures.find((texture) => texture.name === 'photo');
+
+    // Both CPU readback and direct upload are zero. This is legal for a truly
+    // black photo: accept P without throwing, but return/record photoAllBlack.
+    renderer.setUploadStrategy('pixels');
+    contextPrototype.getImageData = function blackPhotoReadback(...args) {
+      if (this.canvas === inputCanvas) {
+        return { data: new Uint8ClampedArray(inputCanvas.width * inputCanvas.height * 4) };
+      }
+      return originalGetImageData.apply(this, args);
+    };
+    const originalBlackTexImage2D = gl.texImage2D;
+    let mockedBlackDirectUploads = 0;
+    gl.texImage2D = function blackDirectUpload(...args) {
+      if (args.length === 6 && args[5] === inputCanvas) {
+        mockedBlackDirectUploads += 1;
+        return originalBlackTexImage2D.call(
+          gl, args[0], args[1], args[2], inputCanvas.width, inputCanvas.height, 0,
+          gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(inputCanvas.width * inputCanvas.height * 4)
+        );
+      }
+      return originalBlackTexImage2D.apply(gl, args);
+    };
+    let bothBlackStatus;
+    try {
+      bothBlackStatus = renderer.setPhoto(inputCanvas);
+    } finally {
+      contextPrototype.getImageData = originalGetImageData;
+      gl.texImage2D = originalBlackTexImage2D;
+    }
+    const bothBlackState = renderer.getDiagnostics();
+    const bothBlackPhoto = bothBlackState.textures.find((texture) => texture.name === 'photo');
+
+    // LUT variant: the scratch decode of the ImageBitmap has a zero white
+    // node, but direct upload is valid. D must win and become sticky.
+    renderer.setUploadStrategy('pixels');
+    contextPrototype.getImageData = function suspectLutReadback(...args) {
+      if (this.canvas && this.canvas.width === images.base.width &&
+        this.canvas.height === images.base.height) {
+        return { data: new Uint8ClampedArray(images.base.width * images.base.height * 4) };
+      }
+      return originalGetImageData.apply(this, args);
+    };
+    try {
+      renderer.setLut(images.base, stock);
+    } finally {
+      contextPrototype.getImageData = originalGetImageData;
+    }
+    const suspectLutState = renderer.getDiagnostics();
+    const suspectLut = suspectLutState.textures.find((texture) => texture.name === 'lut');
+
+    // Finish in the production-preferred state and run the exact same GL
+    // diagnostic suite exposed by 关于 → 诊断 in the Mini Program.
+    renderer.setUploadStrategy('pixels');
+    renderer.reuploadTextures();
+    const outcome = SpektrafilmDiagnostics.runDiagnostics({
+      renderer,
+      canvas,
+      nodeSize: { width: canvas.width, height: canvas.height },
+      pixelRatio: window.devicePixelRatio || 1,
+      photo: {
+        type: photo.sourceType,
+        width: inputCanvas.width,
+        height: inputCanvas.height,
+      },
+      app: { name: 'wx-spektrafilm', version: 'harness' },
+    });
+    return {
+      comparison: {
+        maxDiff,
+        differing,
+        pixels: pixelResult.width * pixelResult.height,
+        pixelStrategies: pixelState.textures.map((texture) => ({
+          name: texture.name, strategy: texture.strategy,
+        })),
+        directStrategies: directState.textures.map((texture) => ({
+          name: texture.name, strategy: texture.strategy,
+        })),
+      },
+      mockFallback: {
+        mockedZeroUploads,
+        finalStrategy: photo.strategy,
+        recentChecks: photo.selfChecks.slice(-3),
+        fallbacks: fallbackState.upload.fallbacks,
+      },
+      mockLutFallback: {
+        mockedZeroUploads: mockedZeroLutUploads,
+        finalStrategy: lutTexture.strategy,
+        recentChecks: lutTexture.selfChecks.slice(-3),
+        fallbacks: lutFallbackState.upload.fallbacks,
+      },
+      suspectPhoto: {
+        status: suspectPhotoStatus,
+        preferredStrategy: suspectPhotoState.upload.preferredStrategy,
+        cpuDecodeSuspect: suspectPhoto.cpuDecodeSuspect,
+        photoAllBlack: suspectPhoto.photoAllBlack,
+        recentChecks: suspectPhoto.selfChecks.slice(-3),
+      },
+      bothBlack: {
+        status: bothBlackStatus,
+        mockedZeroUploads: mockedBlackDirectUploads,
+        preferredStrategy: bothBlackState.upload.preferredStrategy,
+        cpuDecodeSuspect: bothBlackPhoto.cpuDecodeSuspect,
+        photoAllBlack: bothBlackPhoto.photoAllBlack,
+        recentChecks: bothBlackPhoto.selfChecks.slice(-4),
+      },
+      suspectLut: {
+        preferredStrategy: suspectLutState.upload.preferredStrategy,
+        strategy: suspectLut.strategy,
+        cpuDecodeSuspect: suspectLut.cpuDecodeSuspect,
+        photoAllBlack: suspectLut.photoAllBlack,
+        recentChecks: suspectLut.selfChecks.slice(-3),
+      },
+      diagnostics: outcome.report,
+      diagnosticsText: outcome.text,
+    };
+  }
+
   window.spektrafilmHarness = {
     initialise,
     getRenderer() {
@@ -527,5 +750,6 @@
     thumbnail,
     timeStockSwitch,
     verifyLutContract,
+    verifyUploadStrategiesAndDiagnostics,
   };
 }());
