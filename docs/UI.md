@@ -21,8 +21,9 @@ scrollable body with five sections, and a pinned action bar.
 │   ├── 胶片预设             three category sections, cards with name / ISO / description / thumbnail
 │   ├── 调整                 曝光 EV, 色温, 色调, 强度, 后期微调（对比度, 饱和度）, 重置
 │   ├── 效果                 颗粒, 光晕, 暗角, 重置效果
-│   ├── 导出                 说明, 进度条 + 取消, 保存到相册
-│   └── 关于                 attribution, licence, version, effect-scope note, 诊断
+│   ├── 导出                 说明, 进度条 + 取消, 保存到相册, 失败原因 + 重试 / 打开设置
+│   └── 关于                 attribution, licence, version, effect-scope note, 隐私保护指引, 诊断
+├── .privacy-modal           隐私保护指引 popup: 同意（agreePrivacyAuthorization）/ 拒绝 (conditional)
 ├── .diagnostics-modal      copyable monospaced device report (conditional)
 └── .actions                从相册选择 / 拍照 / 清除  (+ safe-area padding)
 ```
@@ -103,10 +104,22 @@ modified, and it owns the 「保存到相册」 button.
 | idle | the 「保存到相册」 button (disabled without a photo) |
 | running | the stage text (`解码原图 …`, `渲染 2/6…`, `编码 JPEG…`, `保存到相册…`), a progress bar and a 「取消」 button |
 | done | a toast: 「已保存到相册」, 「已取消保存」 or the reason of the failure |
+| failed / timed out | the reason in a red box, plus a 「重试」 and a 「打开设置」 button |
 
 The button is disabled while an export runs, so a second export cannot start. The cancel button
-only sets the cancel flag; the export stops at the next tile boundary and releases its buffers.
-The pipeline, the permission flow and the tiling are documented in `docs/EXPORT.md`.
+cancels the export signal: the export stops at the next tile boundary, a pending platform call is
+abandoned (its late answer is ignored) and the buffers are released. The pipeline, the permission
+flow, the timeouts and the privacy popup are documented in `docs/EXPORT.md` and `docs/PRIVACY.md`.
+
+## Privacy popup (「隐私保护指引」)
+
+The platform requires the user to accept the 《用户隐私保护指引》 before a
+privacy scoped interface is used (`wx.chooseMedia`, `wx.saveImageToPhotosAlbum`). The app
+registers `wx.onNeedPrivacyAuthorization` in `app.js onLaunch` and shows its own dark popup: the
+name of the guide, the text, a 「查看隐私保护指引」 button (`wx.openPrivacyContract`), a 「同意」
+button (`<button id="agree-btn" open-type="agreePrivacyAuthorization">`, the platform verifies that
+this very button was tapped) and a 「拒绝」 button. The popup is shown before the photo picker and
+before the album write; a refusal aborts the action with a clear message. See `docs/PRIVACY.md`.
 
 ## Share entries
 
@@ -311,11 +324,14 @@ debug session). None of them is covered by the headless harness.
 17. **Effect performance** — dragging an effect slider stays smooth on a low-end phone. The
     halation needs three extra passes (exposure, horizontal blur, vertical blur) and the grain
     evaluates three noise fields per pixel; both are skipped entirely at strength 0.
-18. **Export** — 「保存到相册」 asks for the album permission (or explains it and opens the
-    settings), renders the picture with the current look and writes a JPEG into the album. The
-    progress text and the progress bar advance, 「取消」 stops the export, and the toast reports
-    the result. The saved file has the original resolution (long edge 4096 px or the GPU limit)
-    and looks like the preview.
+18. **Export** — 「保存到相册」 confirms the privacy guide (the in-app popup),
+    renders the picture with the current look and writes a JPEG into the album
+    (the album scope is not asked for in advance: the save asks for it and the
+    app recovers from a refusal with the settings). The progress text and the progress bar
+    advance, 「取消」 stops the export (also while a platform call is pending), and the toast
+    reports the result. A failure or a timeout shows the reason with a 「重试」 and a
+    「打开设置」 button. The saved file has the original resolution (long edge 4096 px or the GPU
+    limit) and looks like the preview.
 19. **Export memory** — a 12 MP photo must not crash the app on a low-end phone; watch the
     memory peak and the time of the export.
 20. **Share** — the app message and the timeline entries appear in the platform menu and open the

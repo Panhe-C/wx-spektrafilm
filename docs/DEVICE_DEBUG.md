@@ -289,6 +289,31 @@ text is also logged with `[wx-spektrafilm][diag]`.
 The report intentionally contains only tiny probe values, not photo pixels or files. It is held in
 memory for the current page process, not persisted or uploaded.
 
+## The export and the privacy sections
+
+The report has two more sections, added with the privacy work
+(`docs/PRIVACY.md`):
+
+* **Export steps** — the ring buffer of the last export: every step with its
+  phase (`start`, `ok`, `error`, `timeout`, `cancelled`), its elapsed time and
+  the raw payload of the callback. The same lines are written to the console
+  with the prefix `[wx-spektrafilm][export]`.
+* **Privacy** — the state of the privacy guard: whether
+  `wx.onNeedPrivacyAuthorization` was installed and fired (and for which
+  interface), the result of `wx.getPrivacySetting`, whether the in-app popup
+  is open, the last decision, the raw `authSetting` of `wx.getSetting` and
+  the base library version.
+
+| Evidence | Decisive interpretation |
+|---|---|
+| A `timeout` entry for `getSetting` | The hint did not answer; the export continues (it never blocks) |
+| A `timeout` entry for `privacy` or `save` | The platform never answered; the export reports the step and the elapsed time |
+| A `late … answer ignored` entry | A callback arrived after the timeout; the step had already completed |
+| `needPrivacyFired: false` and the export still fails with `privacy` | The interface was refused (`privacy permission is not authorized`) or not declared in the console |
+| `needAuthorization: true` in the setting | The user has not accepted the guide yet; the app asks with its own popup |
+| `installed: false` | The base library is older than 2.32.3 and does not intercept the privacy interfaces |
+| `authSetting` without `scope.writePhotosAlbum` | The album scope was never granted or was refused; the save asks for it itself |
+
 ## Verification boundary
 
 The formatter is Node-tested. The GL suite runs in Chrome/SwiftShader with exact solid-colour output,

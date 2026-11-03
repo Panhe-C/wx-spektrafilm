@@ -12,7 +12,9 @@ const ui = require('../../utils/ui-state.js');
 const thumbnails = require('../../utils/thumbnail.js');
 const appInfo = require('../../utils/app-info.js');
 const { createExportHost } = require('../../utils/export-wechat.js');
-const { exportImage } = require('../../utils/export.js');
+const Export = require('../../utils/export.js');
+const Privacy = require('../../utils/privacy.js');
+const StepLog = require('../../utils/step-log.js');
 const Diagnostics = require('../../utils/diagnostics.js');
 
 const DEFAULT_ADJUSTMENTS = ui.ADJUSTMENT_DEFAULTS;
@@ -68,6 +70,15 @@ Page({
     exporting: false,
     exportText: '',
     exportProgress: 0,
+    exportStatus: ui.EXPORT_STATUS.IDLE,
+    exportError: '',
+    exportCanRetry: false,
+    exportCanOpenSetting: false,
+    privacyVisible: false,
+    privacyTitle: '隐私保护指引',
+    privacyBody: '',
+    privacyNote: '',
+    privacyName: '',
     version: appInfo.version,
     sourceUrl: appInfo.sourceUrl,
     diagnosticsOpen: false,
@@ -90,8 +101,17 @@ Page({
     this.exportCancel = null;
     // The export pipeline and the host factory are seams, so that the page
     // wiring can be unit-tested with a mock host.
-    this.exportRunner = exportImage;
+    this.exportRunner = Export.exportImage;
     this.exportHostFactory = createExportHost;
+    this.exportSteps = StepLog.createStepLog();
+    this.exportAuthSetting = null;
+    // The privacy guard is installed as early as possible (app.js onLaunch)
+    // and the page renders its popup.
+    this.privacyGuard = Privacy.getPrivacyGuard();
+    this.privacyGuard.install();
+    this.privacyGuard.attach({
+      onChange: (view) => this.applyPrivacyView(view),
+    });
     this.adjustments = Object.assign({}, DEFAULT_ADJUSTMENTS);
     this.effects = Effects.normalize(APP_EFFECT_DEFAULTS);
     this.comparing = false;
@@ -118,8 +138,10 @@ Page({
     try {
       const system = wx.getSystemInfoSync();
       this.devicePixelRatio = system.pixelRatio || 1;
+      this.sdkVersion = system.SDKVersion || '';
     } catch (error) {
       this.devicePixelRatio = 1;
+      this.sdkVersion = '';
     }
     this.enableShareMenu();
   },
@@ -170,6 +192,9 @@ Page({
     this.operationId += 1;
     this.stockRequestId += 1;
     this.clearTimers();
+    if (this.privacyGuard) {
+      this.privacyGuard.detach();
+    }
     if (this.observer && this.observer.disconnect) {
       try {
         this.observer.disconnect();
@@ -314,6 +339,15 @@ Page({
     const sourceType = event.currentTarget.dataset.source === 'camera' ? 'camera' : 'album';
     this.setData({ error: '' });
     try {
+      // The photo picker is a privacy scoped interface («选中的照片或视频信息»
+      // and, for the camera, «访问你的摄像头»): the consent is asked before
+      // the picker opens. If the user refuses, the import is aborted with a
+      // clear message — it never hangs.
+      const consent = await this.requestPrivacyConsent('pick');
+      if (!consent.granted) {
+        this.setData({ error: consent.message });
+        return;
+      }
       const result = await this.chooseMedia(sourceType);
       const file = result.tempFiles && result.tempFiles[0];
       if (!file || !file.tempFilePath) {
@@ -688,6 +722,88 @@ Page({
     );
   },
 
+  // --- the privacy popup ----------------------------------------------------
+
+  /**
+   * Ask for the privacy consent.
+   *
+   * The guard shows the in-app popup; the result is always decided (the
+   * popup has its own timeout), so the caller never waits forever.
+   */
+  async requestPrivacyConsent(reason) {
+    if (!this.privacyGuard) {
+      return { granted: true, reason: 'no-guard' };
+    }
+    let result;
+    try {
+      result = await this.privacyGuard.requestConsent({ reason });
+    } catch (error) {
+      console.error('[wx-spektrafilm][privacy] the consent failed', error);
+      return {
+        granted: false,
+        reason: 'error',
+        message: '隐私授权失败，请重试。',
+      };
+    }
+    if (result && result.granted) {
+      return result;
+    }
+    const reason_ = (result && result.reason) || 'refused';
+    const message = reason_ === 'timeout'
+      ? '隐私授权等待超时，请重试。'
+      : '未同意隐私协议，无法继续。';
+    return { granted: false, reason: reason_, message };
+  },
+
+  applyPrivacyView(view) {
+    const popup = ui.privacyPopupView(view);
+    this.setData({
+      privacyVisible: popup.visible,
+      privacyTitle: popup.title,
+      privacyBody: popup.body,
+      privacyNote: popup.note,
+      privacyName: popup.name,
+    });
+  },
+
+  // The 「同意」 button is a real <button open-type="agreePrivacyAuthorization">:
+  // the platform checks that the user tapped it, so the id is passed to the
+  // pending resolve.
+  onPrivacyAgree() {
+    if (!this.privacyGuard) {
+      return;
+    }
+    this.privacyGuard.agree(Privacy.AGREE_BUTTON_ID);
+  },
+
+  onPrivacyRefuse() {
+    if (!this.privacyGuard) {
+      return;
+    }
+    this.privacyGuard.refuse();
+  },
+
+  onOpenPrivacyContract() {
+    if (typeof wx.openPrivacyContract !== 'function') {
+      this.setData({ privacyNote: '当前微信版本不支持打开隐私协议页面。' });
+      return;
+    }
+    try {
+      wx.openPrivacyContract({
+        success: () => {},
+        fail: (error) => {
+          console.error('[wx-spektrafilm][privacy] openPrivacyContract failed', error);
+          this.setData({
+            privacyNote: '无法打开隐私协议页面：可能尚未在 mp 后台配置《用户隐私保护指引》。',
+          });
+        },
+      });
+    } catch (error) {
+      console.error('[wx-spektrafilm][privacy] openPrivacyContract failed', error);
+      this.setData({ privacyNote: '无法打开隐私协议页面。' });
+    }
+  },
+
   // --- full-resolution export ---------------------------------------------
 
   /**
@@ -704,11 +820,24 @@ Page({
     }
     const stock = this.activeStock;
     this.exporting = true;
-    this.exportCancel = { cancelled: false };
-    this.setData({ exporting: true, exportText: '准备中…', exportProgress: 0 });
+    // The cancel signal also aborts a pending WeChat call: the late answer
+    // of an abandoned call is ignored.
+    this.exportCancel = Export.createCancelSignal();
+    this.exportSteps = StepLog.createStepLog();
+    this.exportAuthSetting = null;
+    this.setData({
+      exporting: true,
+      exportText: '准备中…',
+      exportProgress: 0,
+      exportStatus: ui.EXPORT_STATUS.RUNNING,
+      exportError: '',
+      exportCanRetry: false,
+      exportCanOpenSetting: false,
+    });
     try {
       const host = this.exportHostFactory({
         canvas: this.canvas,
+        privacy: this.privacyGuard,
         getStockLut: async (stockId, needExtended) => {
           const entry = (this.lutManifest || []).find((item) => item.id === stockId);
           if (!entry) {
@@ -738,33 +867,112 @@ Page({
             exportProgress: progress.progress,
           });
         },
-        isCancelled: () => !!(this.exportCancel && this.exportCancel.cancelled),
+        onStep: (entry) => {
+          this.exportSteps.push(entry);
+        },
+        isCancelled: () => !!(this.exportCancel && this.exportCancel.isCancelled()),
+        cancelSignal: this.exportCancel,
       });
+      this.exportAuthSetting = result && result.authSetting ? result.authSetting : null;
       if (result.cancelled) {
+        this.setData({
+          exportStatus: ui.EXPORT_STATUS.CANCELLED,
+          exportText: '',
+          exportError: '',
+        });
         wx.showToast({ title: '已取消保存', icon: 'none' });
       } else if (result.ok) {
+        this.setData({
+          exportStatus: ui.EXPORT_STATUS.DONE,
+          exportText: '',
+          exportError: '',
+        });
         wx.showToast({ title: '已保存到相册', icon: 'success' });
       } else {
-        wx.showToast({ title: result.message || '保存失败，请重试', icon: 'none' });
+        const status = result.timeout
+          ? ui.EXPORT_STATUS.TIMEOUT
+          : ui.EXPORT_STATUS.FAILED;
+        const message = ui.exportStatusText(status, { message: result.message });
+        this.setData({
+          exportStatus: status,
+          exportText: '',
+          exportError: message,
+          exportCanRetry: true,
+          exportCanOpenSetting: true,
+        });
+        wx.showToast({ title: message, icon: 'none' });
       }
     } catch (error) {
-      wx.showToast({ title: this.describeExportError(error), icon: 'none' });
+      console.error('[wx-spektrafilm][export] the export failed', error);
+      const message = ui.exportStatusText(ui.EXPORT_STATUS.FAILED, {
+        message: this.describeExportError(error),
+      });
+      this.setData({
+        exportStatus: ui.EXPORT_STATUS.FAILED,
+        exportText: '',
+        exportError: message,
+        exportCanRetry: true,
+        exportCanOpenSetting: true,
+      });
+      wx.showToast({ title: message, icon: 'none' });
     } finally {
       this.exporting = false;
       this.exportCancel = null;
-      this.setData({ exporting: false, exportText: '', exportProgress: 0 });
+      this.setData({ exporting: false, exportProgress: 0 });
     }
   },
 
   onCancelExport() {
-    if (this.exportCancel) {
-      this.exportCancel.cancelled = true;
-      this.setData({ exportText: '正在取消…' });
+    if (!this.exportCancel) {
+      return;
+    }
+    this.exportCancel.cancel();
+    this.setData({ exportText: '正在取消…' });
+  },
+
+  // The export failed: the user can try again or open the settings.
+  onRetryExport() {
+    if (this.exporting) {
+      return;
+    }
+    this.onSaveTap();
+  },
+
+  onOpenAlbumSetting() {
+    if (typeof wx.openSetting !== 'function') {
+      wx.showToast({ title: '当前微信版本不支持打开设置', icon: 'none' });
+      return;
+    }
+    try {
+      wx.openSetting({
+        success: (result) => {
+          const authSetting = result && result.authSetting ? result.authSetting : {};
+          this.exportAuthSetting = authSetting;
+          console.log('[wx-spektrafilm][export] the settings were opened', authSetting);
+        },
+        fail: (error) => {
+          console.error('[wx-spektrafilm][export] openSetting failed', error);
+        },
+      });
+    } catch (error) {
+      console.error('[wx-spektrafilm][export] openSetting failed', error);
     }
   },
 
   describeExportError(error) {
     const message = String((error && (error.errMsg || error.message)) || '');
+    if (error && error.code === 'EXPORT_TIMEOUT') {
+      const elapsed = Number.isFinite(Number(error.elapsed))
+        ? `${(Number(error.elapsed) / 1000).toFixed(1)} 秒`
+        : '未知时间';
+      return `导出超时（${elapsed} 未收到回调），请重试。`;
+    }
+    if (error && error.code === 'EXPORT_CANCELLED') {
+      return '已取消保存。';
+    }
+    if (/privacy/i.test(message)) {
+      return '隐私授权未完成，无法保存到相册。';
+    }
     if (/offscreen/i.test(message)) {
       return '此设备不支持离屏渲染，无法导出。';
     }
@@ -1154,10 +1362,13 @@ Page({
         pixelRatio: this.devicePixelRatio,
         photo: this.photoSourceInfo,
         photoSelfTest,
+        exportSteps: this.exportSteps ? this.exportSteps.entries() : [],
+        privacy: this.privacyState(),
         app: {
           name: appInfo.name,
           version: appInfo.version,
           appId: appInfo.appId,
+          sdkVersion: this.sdkVersion || '',
         },
       });
       this.setData({
@@ -1178,6 +1389,18 @@ Page({
       this.diagnosticsRunning = false;
       this.setData({ diagnosticsRunning: false });
     }
+  },
+
+  // The privacy state of the diagnostics: the setting of the platform, the
+  // events of the guard and the raw authorisation of the album scope.
+  privacyState() {
+    if (!this.privacyGuard) {
+      return null;
+    }
+    const state = this.privacyGuard.state();
+    return Object.assign({}, state, {
+      authSetting: this.exportAuthSetting || null,
+    });
   },
 
   onOpenDiagnostics() {
@@ -1296,6 +1519,8 @@ Page({
     let friendly = '处理照片失败，请重试。';
     if (/cancel/i.test(message)) {
       friendly = '已取消选择。';
+    } else if (/privacy/i.test(message)) {
+      friendly = '隐私接口未声明：请在 mp 后台「设置 → 服务内容声明 → 用户隐私保护指引」中声明「选中的照片或视频信息」后重试。';
     } else if (/auth|deny|permission|authorize/i.test(message)) {
       friendly = '无法访问照片或相机，请在设置中允许相应权限。';
     } else if (error && error.code === 'UNSUPPORTED_TYPE') {

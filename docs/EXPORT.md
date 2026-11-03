@@ -32,7 +32,9 @@ size is 2048.
 ## 2. The pipeline
 
 ```text
-wx.getSetting / wx.authorize / wx.showModal / wx.openSetting   (permission)
+wx.getPrivacySetting + the in-app privacy popup           (privacy consent)
+  → wx.getSetting (a hint only, it never blocks)           (permission)
+  → wx.showModal / wx.openSetting (only if the scope was refused before)
   → decode Image (natural size) + wx.getImageInfo                  (oriented size)
   → utils/export.js planExport()                                  (size + tiles)
   → utils/photo.js prepareExportImage()                           (decode + EXIF)
@@ -40,19 +42,22 @@ wx.getSetting / wx.authorize / wx.showModal / wx.openSetting   (permission)
   → 2D assembly canvas                                            (putImageData)
   → wx.canvasToTempFilePath({fileType:'jpg', quality:0.92})       (encode)
   → wx.saveImageToPhotosAlbum()                                   (save)
+  → on an auth-deny error: wx.showModal → wx.openSetting → one retry
 ```
 
 `utils/export.js` owns the plan and the orchestration; every WeChat call is
 an injected host adapter (`utils/export-wechat.js` builds them). The unit
 suite (`harness/test-export.mjs`) injects a mock host, so the whole flow —
-including the permission handling and the cancellation — is tested in Node
-without a browser.
+including the permission handling, the privacy consent, the timeouts and the
+cancellation — is tested in Node without a browser.
+
+The privacy part of the flow is described in `docs/PRIVACY.md`.
 
 ### Stages and progress
 
 | stage | what happens | progress |
 |---|---|---|
-| `permission` | the album permission is read and, if needed, requested | 2 % |
+| `permission` | the privacy guide is confirmed and the album scope is read (a hint) | 2 % |
 | `decode` | the original is decoded and drawn into a 2D canvas at the export size | 10 % |
 | `render` | one tile per step, `渲染 n/m` | 10 … 80 % |
 | `encode` | the assembly canvas is written as a JPEG | 88 % |
@@ -122,17 +127,38 @@ so the bloom of a tile equals the bloom of the single-pass render.
 
 ## 5. The permission flow
 
-`scope.writePhotosAlbum` is checked before anything expensive happens:
+`scope.writePhotosAlbum` is **not** asked for in advance any more:
+`wx.authorize` is a privacy scoped interface itself, and the platform wants
+the target interface to be called and its authorisation error to be handled.
 
 | state | action | result |
 |---|---|---|
-| already granted | nothing | the export starts |
-| never asked | `wx.authorize` | granted → the export starts; refused → 「未获得相册权限…」 |
-| refused before | `wx.showModal` explains the need, then `wx.openSetting` | granted in the settings → the export starts; cancelled → 「已取消保存。」; still refused → 「请在设置中开启「保存到相册」权限后再试。」 |
+| the privacy guide was not accepted yet | the in-app popup asks the user (a real `<button open-type="agreePrivacyAuthorization">`) | 「同意」 → the export starts; 「拒绝」 → 「未同意隐私协议，无法保存到相册。」 |
+| the album scope is already granted | nothing | the export starts |
+| the album scope was refused before | `wx.showModal` explains the need, then `wx.openSetting` | granted in the settings → the export starts; cancelled → 「已取消保存。」; still refused → 「请在设置中开启「保存到相册」权限后再试。」 |
+| the save fails with an auth-deny error | `wx.showModal` → `wx.openSetting` → the save is retried **once** | granted → the picture is saved; otherwise the error message of the platform |
 
-The save step maps the WeChat errors to Chinese messages as well (cancel,
-missing permission, other failures). All five paths are unit-tested with a
-mock `wx` in `harness/test-export.mjs`.
+`wx.getSetting` is only a *hint*: it has its own short timeout and the export
+continues when it does not answer. It never blocks the export.
+
+Every platform call runs inside a **timeout wrapper** (8 s by default, 15 s
+for the save, 30 s for the encode). A timeout produces a message that names
+the step and the elapsed time, the export panel offers a retry and
+「打开设置」, and a late callback is ignored. The 「取消」 button works at
+every step, also while a platform call is pending.
+
+The privacy consent, the popup and the console configuration are described in
+`docs/PRIVACY.md`.
+
+## 5b. The step log and the diagnostics
+
+Every step of the export is written to the console with the prefix
+`[wx-spektrafilm][export]` (`step phase elapsed detail`) and into a bounded
+ring buffer. The buffer is shown in the 「关于 → 诊断」 panel under
+**Export steps**, next to the state of the privacy guard (**Privacy**: the
+result of `wx.getPrivacySetting`, whether `onNeedPrivacyAuthorization` fired,
+the raw `authSetting` and the base library version). The panel is copyable,
+so a failed export can be reported with its whole state.
 
 ## 6. Memory
 
@@ -158,10 +184,22 @@ keep the peak below what a mid-range phone can hold, but the real peak has
 * the export size: the 4096 px budget, the GPU limit, no upscaling;
 * the tile plan: exact coverage (every pixel covered once), no gaps, the
   margins, the halo buffer fitting into the texture limit;
-* the permission flow: authorized, not asked, refused, denied + settings,
-  cancelled;
-* the save errors and the orchestrator: the stage order, the cancellation,
-  the release of the buffers, the failure messages.
+* the permission flow: the privacy pre-flight, the hint, the scope that was
+  refused before (modal + settings), the cancellation;
+* the save errors (cancel, missing permission, privacy errors, other
+  failures) and the auth-deny recovery (modal → settings → one retry);
+* the timeouts: a `getSetting`, a privacy pre-flight and a save that never
+  answer must end in a bounded time with a message that names the step;
+* a late answer after the timeout (ignored) and the cancellation while a call
+  is pending;
+* the orchestrator: the stage order, the cancellation, the release of the
+  buffers, the failure messages.
+
+`harness/test-privacy.mjs` (pure, Node) verifies the privacy guard: the
+listener is registered once, a privacy scoped interface stays pending until
+the guard resolves it, the resolution carries the id of the 「同意」 button,
+the refusal resolves it with `{event:'disagree'}`, and the pre-flight never
+waits forever (`docs/PRIVACY.md`).
 
 `harness/test-export-browser.mjs` (headless Chrome/SwiftShader):
 

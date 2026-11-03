@@ -299,6 +299,19 @@
             </view>
             <button class="export-cancel" bindtap="onCancelExport">取消</button>
           </view>
+          <view wx:if="{{exportError}}" class="export-error">{{exportError}}</view>
+          <view wx:if="{{exportCanRetry || exportCanOpenSetting}}" class="panel-actions export-actions">
+            <button
+              wx:if="{{exportCanRetry}}"
+              class="reset-button"
+              bindtap="onRetryExport"
+            >重试</button>
+            <button
+              wx:if="{{exportCanOpenSetting}}"
+              class="reset-button"
+              bindtap="onOpenAlbumSetting"
+            >打开设置</button>
+          </view>
           <view class="panel-actions">
             <button
               class="reset-button export-button"
@@ -335,6 +348,10 @@
             <text class="about-key">设备诊断</text>
             <button class="about-diagnostic" bindtap="onOpenDiagnostics">诊断</button>
           </view>
+          <view class="about-row">
+            <text class="about-key">隐私保护指引</text>
+            <button class="about-diagnostic" bindtap="onOpenPrivacyContract">查看</button>
+          </view>
           <view class="about-note">颗粒与光晕为近似效果（详见 docs/EFFECTS.md）；扩散滤镜、耀光、锐化仍未包含。</view>
         </view>
       </view>
@@ -362,6 +379,25 @@
       bindtap="onChoosePhoto"
     >拍照</button>
     <button wx:if="{{hasPhoto}}" class="clear-button" bindtap="onClearPhoto">清除</button>
+  </view>
+
+  <view wx:if="{{privacyVisible}}" class="privacy-modal">
+    <view class="privacy-panel">
+      <view class="privacy-title">{{privacyTitle}}</view>
+      <view class="privacy-body">{{privacyBody}}</view>
+      <view wx:if="{{privacyName}}" class="privacy-name">{{privacyName}}</view>
+      <view wx:if="{{privacyNote}}" class="privacy-note">{{privacyNote}}</view>
+      <button class="privacy-contract" bindtap="onOpenPrivacyContract">查看隐私保护指引</button>
+      <view class="privacy-actions">
+        <button
+          id="agree-btn"
+          class="privacy-agree"
+          open-type="agreePrivacyAuthorization"
+          bindagreeprivacyauthorization="onPrivacyAgree"
+        >同意</button>
+        <button class="privacy-refuse" bindtap="onPrivacyRefuse">拒绝</button>
+      </view>
+    </view>
   </view>
 
   <view wx:if="{{diagnosticsOpen}}" class="diagnostics-modal">

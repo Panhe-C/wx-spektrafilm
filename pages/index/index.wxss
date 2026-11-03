@@ -622,3 +622,125 @@
   font-size: 25rpx;
   line-height: 84rpx;
 }
+
+.export-error {
+  margin-top: 12rpx;
+  padding: 12rpx 16rpx;
+  border: 1px solid #77443f;
+  border-radius: 10rpx;
+  background: #482b29;
+  color: #ffd8d2;
+  font-size: 23rpx;
+  line-height: 1.5;
+}
+
+.privacy-modal {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48rpx;
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.privacy-panel {
+  width: 100%;
+  max-width: 620rpx;
+  padding: 32rpx 28rpx 24rpx;
+  border: 1px solid #3a3a3a;
+  border-radius: 18rpx;
+  background: #1b1b1b;
+  color: #ededed;
+}
+
+.privacy-title {
+  color: #f2dfc0;
+  font-size: 30rpx;
+  font-weight: 600;
+}
+
+.privacy-body {
+  margin-top: 16rpx;
+  color: #c9c9c9;
+  font-size: 25rpx;
+  line-height: 1.6;
+}
+
+.privacy-name {
+  margin-top: 12rpx;
+  color: #d6b98a;
+  font-size: 23rpx;
+}
+
+.privacy-note {
+  margin-top: 12rpx;
+  color: #e0a49c;
+  font-size: 22rpx;
+  line-height: 1.5;
+}
+
+.privacy-contract {
+  margin-top: 20rpx;
+  border: 1px solid #4a4a4a;
+  border-radius: 12rpx;
+  background: transparent;
+  color: #d6b98a;
+  font-size: 24rpx;
+  line-height: 72rpx;
+}
+
+.privacy-contract::after {
+  border: 0;
+}
+
+.privacy-actions {
+  display: flex;
+  margin-top: 20rpx;
+}
+
+.privacy-agree {
+  flex: 1 1 auto;
+  margin-right: 16rpx;
+  border-radius: 12rpx;
+  background: #d6b98a;
+  color: #211c15;
+  font-size: 26rpx;
+  line-height: 76rpx;
+}
+
+.privacy-agree::after {
+  border: 0;
+}
+
+.privacy-refuse {
+  flex: 1 1 auto;
+  margin: 0;
+  border: 1px solid #4a4a4a;
+  border-radius: 12rpx;
+  background: #262626;
+  color: #e6e6e6;
+  font-size: 26rpx;
+  line-height: 76rpx;
+}
+
+.privacy-refuse::after {
+  border: 0;
+}
+
+.export-actions {
+  display: flex;
+}
+
+.export-actions .reset-button {
+  flex: 1 1 auto;
+  width: auto;
+}
+
+.export-actions .reset-button + .reset-button {
+  margin-left: 16rpx;
+}

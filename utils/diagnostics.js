@@ -2,11 +2,11 @@
 // formatReport() is pure and unit-tested in Node.
 (function registerDiagnostics(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./step-log.js'));
   } else {
-    root.SpektrafilmDiagnostics = factory();
+    root.SpektrafilmDiagnostics = factory(root.SpektrafilmStepLog);
   }
-}(typeof globalThis !== 'undefined' ? globalThis : this, function diagnosticsFactory() {
+}(typeof globalThis !== 'undefined' ? globalThis : this, function diagnosticsFactory(StepLog) {
   const PREFIX = '[wx-spektrafilm][diag]';
   let lastReport = null;
   let lastText = '';
@@ -112,6 +112,35 @@
     return lines;
   }
 
+  // The export steps and the privacy state are appended to the report: they
+  // explain a stuck or a failed export without a debugger.
+  function formatExportSteps(entries) {
+    const list = Array.isArray(entries) ? entries : [];
+    if (!list.length) {
+      return ['(no export has been run yet)'];
+    }
+    return list.map((entry) => StepLog.formatEntry(entry));
+  }
+
+  function formatPrivacy(privacy) {
+    const value = privacy || {};
+    const setting = value.setting || {};
+    return [
+      `installed: ${value.installed === true}`,
+      `needPrivacyFired: ${value.needPrivacyFired === true} ` +
+      `count=${value.needPrivacyCount === undefined ? '-' : value.needPrivacyCount}`,
+      `referrer: ${value.referrer || '-'}`,
+      `popupVisible: ${value.popupVisible === true}`,
+      `lastDecision: ${value.lastDecision || '-'}`,
+      `lastError: ${value.lastError || '-'}`,
+      `setting: available=${setting.available === true} ` +
+      `needAuthorization=${setting.needAuthorization === true} ` +
+      `name=${setting.privacyContractName || '-'} ` +
+      `error=${setting.error || '-'}`,
+      `authSetting: ${json(value.authSetting || null)}`,
+    ];
+  }
+
   // Keep this formatter deterministic apart from values supplied in report.
   // It deliberately emits only compact probes, never full pixel arrays.
   function formatReport(report) {
@@ -159,6 +188,12 @@
       ...formatPhotoGeometry(value),
       '[THUMBNAIL GEOMETRY]',
       json(value.thumbnail || null),
+      '',
+      '[EXPORT STEPS]',
+      ...formatExportSteps(value.exportSteps),
+      '',
+      '[PRIVACY]',
+      ...formatPrivacy(value.privacy),
       '',
       '[UPLOAD]',
       `preferred: ${upload.preferredStrategy || '-'}; active: ${upload.activeStrategy || '-'}`,
@@ -304,6 +339,8 @@
       photo: settings.photo || { type: 'none' },
       photoSelfTest: settings.photoSelfTest || null,
       thumbnail: settings.thumbnail || null,
+      exportSteps: settings.exportSteps || [],
+      privacy: settings.privacy || null,
       gl: { available: false },
       canvas: {
         nodeWidth: settings.nodeSize && settings.nodeSize.width,

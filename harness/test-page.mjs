@@ -13,7 +13,7 @@ globalThis.Page = (definition) => {
   registered = definition;
 };
 globalThis.wx = {
-  getSystemInfoSync: () => ({ pixelRatio: 2 }),
+  getSystemInfoSync: () => ({ pixelRatio: 2, SDKVersion: '3.0.0' }),
   getImageInfo: () => {},
   showToast: () => {},
   setClipboardData: () => {},
@@ -27,6 +27,17 @@ globalThis.wx = {
   // exercises its documented placeholder fallback.
   createOffscreenCanvas: () => ({}),
   createIntersectionObserver: () => ({}),
+  // The privacy interfaces of the platform.
+  getPrivacySetting: (payload) => payload.success({
+    needAuthorization: false,
+    privacyContractName: '《测试隐私保护指引》',
+  }),
+  onNeedPrivacyAuthorization: (listener) => {
+    globalThis.__privacyListener = listener;
+  },
+  openPrivacyContract: (payload) => payload.success({}),
+  openSetting: (payload) => payload.success({ authSetting: {} }),
+  showModal: (payload) => payload.success({ confirm: true }),
 };
 
 require('../pages/index/index.js');
@@ -246,6 +257,41 @@ assert.ok(describedError.endsWith(
 ));
 
 const ui = require('../utils/ui-state.js');
+const Export = require('../utils/export.js');
+
+// --- the privacy popup -------------------------------------------------------
+
+// The platform asks for the consent: the page shows its own popup and the
+// 「同意」 button resolves the pending interface.
+const privacyInstance = createInstance();
+assert.equal(privacyInstance.data.privacyVisible, false);
+let privacyResult = null;
+const privacyPending = new Promise((resolve) => { privacyResult = resolve; });
+globalThis.__privacyListener(privacyResult, { referrer: 'saveImageToPhotosAlbum' });
+assert.equal(privacyInstance.data.privacyVisible, true);
+assert.ok(privacyInstance.data.privacyBody.length > 0);
+// The name of the guide is read asynchronously.
+await new Promise((resolve) => setTimeout(resolve, 5));
+assert.equal(privacyInstance.data.privacyName, '《测试隐私保护指引》');
+privacyInstance.onPrivacyAgree();
+assert.deepEqual(await privacyPending, { buttonId: 'agree-btn', event: 'agree' });
+assert.equal(privacyInstance.data.privacyVisible, false);
+
+// The refusal resolves the pending interface with "disagree".
+let refused = null;
+const refusePending = new Promise((resolve) => { refused = resolve; });
+globalThis.__privacyListener(refused, { referrer: 'chooseMedia' });
+assert.equal(privacyInstance.data.privacyVisible, true);
+privacyInstance.onPrivacyRefuse();
+assert.deepEqual(await refusePending, { event: 'disagree' });
+assert.equal(privacyInstance.data.privacyVisible, false);
+
+// The privacy contract is opened with the platform interface.
+let contractOpened = false;
+wx.openPrivacyContract = (payload) => { contractOpened = true; payload.success({}); };
+privacyInstance.onOpenPrivacyContract();
+assert.equal(contractOpened, true);
+
 instance.setData({ categories: ui.groupStocks(manifest) });
 instance.setData({ selectedStock: 'portra400', selectedStockName: 'Kodak Portra 400' });
 assert.equal(instance.data.categories.length, 3);
@@ -315,14 +361,44 @@ instance.exportRunner = async (options) => {
   options.isCancelled();
   return { ok: false, cancelled: true, message: '已取消保存。' };
 };
-instance.exportCancel = { cancelled: false };
+instance.exportCancel = Export.createCancelSignal();
 instance.onCancelExport();
-assert.equal(instance.exportCancel.cancelled, true);
+assert.equal(instance.exportCancel.isCancelled(), true);
+assert.equal(instance.data.exportText, '正在取消…');
 
 // A failed export reports the message of the pipeline.
 instance.exportRunner = async () => ({ ok: false, message: '请在设置中开启「保存到相册」权限后再试。' });
 await instance.onSaveTap();
 assert.ok(toasts[toasts.length - 1].title.indexOf('相册') !== -1);
+// A failed export offers a retry and the settings.
+assert.equal(instance.data.exportStatus, 'failed');
+assert.equal(instance.data.exportError, '请在设置中开启「保存到相册」权限后再试。');
+assert.equal(instance.data.exportCanRetry, true);
+assert.equal(instance.data.exportCanOpenSetting, true);
+
+// A timed out export says so and never stays on one step.
+instance.exportRunner = async () => ({
+  ok: false,
+  timeout: true,
+  message: '保存到相册超时（8.0 秒未收到回调）。请重试。',
+  stage: 'save',
+});
+await instance.onSaveTap();
+assert.equal(instance.data.exportStatus, 'timeout');
+assert.equal(instance.data.exportCanRetry, true);
+assert.ok(instance.data.exportError.indexOf('超时') !== -1);
+
+// The export steps are collected for the diagnostics panel.
+instance.exportRunner = async (options) => {
+  options.onStep({ step: 'save', phase: 'ok', elapsed: 12, detail: 'ok' });
+  options.onStep({ step: 'encode', phase: 'timeout', elapsed: 8000, detail: 'no answer' });
+  return { ok: true };
+};
+await instance.onSaveTap();
+assert.equal(instance.exportSteps.entries().length, 2);
+assert.equal(instance.data.exportStatus, 'done');
+assert.ok(instance.privacyState().installed);
+assert.ok(instance.privacyState().setting.available);
 
 // The share entries.
 const share = instance.onShareAppMessage();

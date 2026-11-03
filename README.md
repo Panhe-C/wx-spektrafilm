@@ -72,13 +72,19 @@ The 「导出」 panel saves the picture with the current look at the original r
   across the tile borders — the tiled render is verified against a single-pass render in the
   harness (maximum difference: 1 code);
 - the stages (解码 / 渲染 n/m / 编码 / 保存) are shown with a progress bar and a cancel button;
-- the album permission (`scope.writePhotosAlbum`) is requested before the expensive work, and a
-  refused permission opens the settings with an explanation;
+- every platform call runs inside a timeout wrapper (8 s by default): a WeChat call that never
+  answers can no longer freeze the export — the panel reports the step, the elapsed time and the
+  last raw answer, and offers a retry and 「打开设置」;
+- the privacy guide is confirmed in an in-app popup whose 「同意」 button is a real
+  `<button open-type="agreePrivacyAuthorization">`; the album scope is not asked for in advance
+  any more (the export calls `wx.saveImageToPhotosAlbum` directly and recovers from an auth-deny
+  error with the settings);
 - the result is a JPEG (quality 0.92) in the system photo album.
 
 `docs/EXPORT.md` documents the pipeline, the tile planner, the permission flow and the memory
-budget. `docs/RELEASE_TODO.md` lists what a release still needs (real AppID, privacy
-authorisation, review materials, device tests).
+budget. `docs/PRIVACY.md` documents the privacy authorisation, the console configuration and the
+diagnostics of a failed export. `docs/RELEASE_TODO.md` lists what a release still needs (real
+AppID, privacy authorisation, review materials, device tests).
 
 ## Adjustments (physics and model)
 
@@ -178,7 +184,7 @@ permission flow with a mock `wx`, and the tiled render versus the single-pass re
 - `harness/` — Puppeteer/Chrome and NumPy numerical verification (not shipped in the app)
 - `tools/` — Python LUT tooling and static Mini Program checks (uses `/workspace/venv-sf`)
 - `assets/` — other static assets
-- `docs/` — format, renderer, adjustments, effects, export, UI, orientation, exposure, limitations, release checklist, validation, and previews
+- `docs/` — format, renderer, adjustments, effects, export, privacy, UI, orientation, exposure, limitations, release checklist, validation, and previews
 
 ## Film LUT scope
 

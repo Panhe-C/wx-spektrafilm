@@ -5,7 +5,7 @@
   "description": "Headless WebGL-versus-NumPy verification for wx-spektrafilm",
   "type": "module",
   "scripts": {
-    "test": "node test-orientation.mjs && node test-adjust.mjs && node test-ui-state.mjs && node test-effects-unit.mjs && node test-export.mjs && node test-diagnostics.mjs && node test-page.mjs && node run.mjs && node test-upload-strategies.mjs && node test-presentation.mjs && node test-photo-real.mjs && node test-effects.mjs && node test-export-browser.mjs",
+    "test": "node test-orientation.mjs && node test-adjust.mjs && node test-ui-state.mjs && node test-effects-unit.mjs && node test-export.mjs && node test-privacy.mjs && node test-diagnostics.mjs && node test-page.mjs && node run.mjs && node test-upload-strategies.mjs && node test-presentation.mjs && node test-photo-real.mjs && node test-effects.mjs && node test-export-browser.mjs",
     "test:diagnostics": "node test-diagnostics.mjs && node test-upload-strategies.mjs",
     "test:presentation": "node test-presentation.mjs",
     "test:photo": "node test-photo-real.mjs",
@@ -14,6 +14,7 @@
     "test:ui": "node test-ui-state.mjs",
     "test:effects": "node test-effects-unit.mjs && node test-effects.mjs",
     "test:export": "node test-export.mjs && node test-export-browser.mjs",
+    "test:privacy": "node test-privacy.mjs",
     "test:page": "node test-page.mjs",
     "test:smoke": "node test-adjust.mjs && node run.mjs --smoke",
     "study:ev": "cd .. && PYTHON=${PYTHON:-/workspace/venv-sf/bin/python} && $PYTHON tools/study_exposure_ev.py --resume && $PYTHON tools/study_white_balance.py --resume",

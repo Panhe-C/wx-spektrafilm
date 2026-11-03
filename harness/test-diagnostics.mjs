@@ -78,6 +78,26 @@ const report = {
     },
   },
   glErrors: [{ stage: 'upload-pixels:photo', texture: 'photo', name: 'INVALID_OPERATION', code: 1282 }],
+  exportSteps: [
+    { step: 'permission', phase: 'start', elapsed: 0, detail: '' },
+    { step: 'save', phase: 'timeout', elapsed: 8000, detail: 'no answer after 15000ms' },
+  ],
+  privacy: {
+    installed: true,
+    needPrivacyFired: true,
+    needPrivacyCount: 1,
+    referrer: 'saveImageToPhotosAlbum',
+    popupVisible: false,
+    lastDecision: 'agree',
+    lastError: '',
+    setting: {
+      available: true,
+      needAuthorization: false,
+      privacyContractName: '《测试隐私保护指引》',
+      error: '',
+    },
+    authSetting: { 'scope.writePhotosAlbum': true },
+  },
 };
 
 const before = JSON.stringify(report);
@@ -100,6 +120,14 @@ assert.ok(text.includes('canvasRect: {"x":0,"y":80,"width":375.5,"height":200}')
 assert.ok(text.includes('LUT TEXTURE: black + white corners'));
 assert.ok(text.includes('intensity=1: [100,110,120,255]'));
 assert.ok(text.includes('INVALID_OPERATION (1282)'));
+// The export steps and the privacy state are part of the report.
+assert.ok(text.includes('[EXPORT STEPS]'));
+assert.ok(text.includes('save timeout 8000ms no answer after 15000ms'));
+assert.ok(text.includes('[PRIVACY]'));
+assert.ok(text.includes('needPrivacyFired: true'));
+assert.ok(text.includes('referrer: saveImageToPhotosAlbum'));
+assert.ok(text.includes('name=《测试隐私保护指引》'));
+assert.ok(text.includes('authSetting: {"scope.writePhotosAlbum":true}'));
 assert.ok(text.endsWith('\n'));
 assert.equal(Diagnostics.formatReport(null).includes('[FATAL]'), false);
 

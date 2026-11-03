@@ -188,6 +188,63 @@ assert.equal(ui.isBusyPhase('decoding'), true);
 assert.equal(ui.isBusyPhase('loading-luts'), true);
 assert.equal(ui.isBusyPhase('ready'), false);
 
+// --- the privacy popup ------------------------------------------------------
+
+assert.deepEqual({ ...ui.PRIVACY_STATES }, {
+  HIDDEN: 'hidden',
+  NEED_CONSENT: 'need-consent',
+  AGREED: 'agreed',
+  REFUSED: 'refused',
+  UNAVAILABLE: 'unavailable',
+  ERROR: 'error',
+});
+const hiddenPopup = ui.privacyPopupView({});
+assert.equal(hiddenPopup.visible, false);
+assert.equal(hiddenPopup.state, ui.PRIVACY_STATES.HIDDEN);
+assert.equal(hiddenPopup.agreeText, '同意');
+assert.equal(hiddenPopup.refuseText, '拒绝');
+assert.ok(hiddenPopup.body.length > 0);
+assert.ok(hiddenPopup.title.length > 0);
+const shownPopup = ui.privacyPopupView({
+  visible: true,
+  state: ui.PRIVACY_STATES.NEED_CONSENT,
+  name: '《测试隐私保护指引》',
+  note: '隐私状态读取失败',
+});
+assert.equal(shownPopup.visible, true);
+assert.equal(shownPopup.state, ui.PRIVACY_STATES.NEED_CONSENT);
+assert.equal(shownPopup.name, '《测试隐私保护指引》');
+assert.equal(shownPopup.note, '隐私状态读取失败');
+// The state alone is enough to show the popup.
+assert.equal(ui.privacyPopupView({ state: ui.PRIVACY_STATES.NEED_CONSENT }).visible, true);
+
+// --- the export status ------------------------------------------------------
+
+assert.equal(ui.exportStatusText(ui.EXPORT_STATUS.RUNNING, { text: '渲染 1/2…' }), '渲染 1/2…');
+assert.equal(ui.exportStatusText(ui.EXPORT_STATUS.RUNNING), '导出中…');
+assert.equal(ui.exportStatusText(ui.EXPORT_STATUS.DONE), '已保存到相册');
+assert.equal(ui.exportStatusText(ui.EXPORT_STATUS.CANCELLED), '已取消保存。');
+assert.equal(ui.exportStatusText(ui.EXPORT_STATUS.TIMEOUT, { message: '保存超时' }), '保存超时');
+assert.equal(ui.exportStatusText(ui.EXPORT_STATUS.TIMEOUT), '导出超时，请重试。');
+assert.equal(ui.exportStatusText(ui.EXPORT_STATUS.FAILED, { message: '没有相册权限' }), '没有相册权限');
+assert.equal(ui.exportStatusText(ui.EXPORT_STATUS.FAILED), '保存失败，请重试。');
+assert.equal(ui.exportStatusText(ui.EXPORT_STATUS.IDLE), '');
+assert.deepEqual(ui.exportActions(ui.EXPORT_STATUS.RUNNING), {
+  retry: false,
+  openSetting: false,
+  cancel: true,
+});
+assert.deepEqual(ui.exportActions(ui.EXPORT_STATUS.TIMEOUT), {
+  retry: true,
+  openSetting: true,
+  cancel: false,
+});
+assert.deepEqual(ui.exportActions(ui.EXPORT_STATUS.DONE), {
+  retry: false,
+  openSetting: false,
+  cancel: false,
+});
+
 // --- PNG fallback encoder --------------------------------------------------
 
 const pixels = new Uint8Array(4 * 3 * 4);
@@ -236,5 +293,5 @@ assert.equal(thumbnail.toBase64(new Uint8Array([77, 97, 110])), 'TWFu');
 
 console.log(
   'UI state tests: PASS (adjustment ranges/steps, readouts, grouping, thumbnail policy, ' +
-  'throttle, phase machine, PNG fallback)'
+  'throttle, phase machine, privacy popup, export status, PNG fallback)'
 );

@@ -76,6 +76,37 @@
   });
   const DEFAULT_DESCRIPTION = '基于 spektrafilm 物理流程烘焙的胶片色彩。';
 
+  // The states of the in-app privacy popup. The popup asks the user to
+  // accept the 《用户隐私保护指引》 before a privacy scoped interface (the
+  // photo picker, the album write) is called.
+  const PRIVACY_STATES = Object.freeze({
+    HIDDEN: 'hidden',
+    NEED_CONSENT: 'need-consent',
+    AGREED: 'agreed',
+    REFUSED: 'refused',
+    UNAVAILABLE: 'unavailable',
+    ERROR: 'error',
+  });
+
+  // The states of the export panel.
+  const EXPORT_STATUS = Object.freeze({
+    IDLE: 'idle',
+    RUNNING: 'running',
+    DONE: 'done',
+    FAILED: 'failed',
+    TIMEOUT: 'timeout',
+    CANCELLED: 'cancelled',
+  });
+
+  const EXPORT_STATUS_TEXTS = Object.freeze({
+    idle: '',
+    running: '导出中…',
+    done: '已保存到相册',
+    failed: '保存失败，请重试。',
+    timeout: '导出超时，请重试。',
+    cancelled: '已取消保存。',
+  });
+
   const PHASES = Object.freeze({
     EMPTY: 'empty',
     DECODING: 'decoding',
@@ -266,6 +297,72 @@
     return phase === PHASES.DECODING || phase === PHASES.LOADING_LUTS;
   }
 
+  // --- the privacy popup ----------------------------------------------------
+
+  /**
+   * The view of the privacy popup.
+   *
+   * The 「同意」 button of the popup is a real
+   * `<button open-type="agreePrivacyAuthorization">`: the platform checks
+   * that the user tapped it, so the consent cannot be faked.
+   */
+  function privacyPopupView(state) {
+    const value = state || {};
+    const visible = value.visible === true ||
+      value.state === PRIVACY_STATES.NEED_CONSENT;
+    return {
+      visible,
+      state: visible
+        ? PRIVACY_STATES.NEED_CONSENT
+        : (value.state || PRIVACY_STATES.HIDDEN),
+      title: value.title || '隐私保护指引',
+      body: value.body ||
+        '本应用需要访问你选择的照片，并把导出的照片写入你的相册。我们不会上传、存储或分享任何数据。',
+      note: value.note || '',
+      name: value.name || '',
+      agreeText: '同意',
+      refuseText: '拒绝',
+      contractText: '查看隐私保护指引',
+    };
+  }
+
+  // --- the export status ----------------------------------------------------
+
+  /**
+   * The text of the export panel.
+   *
+   * A running export shows the text of the current step, a finished one its
+   * result; a timeout or a failure always carries a message that names the
+   * step, so that the panel never stays on one step forever.
+   */
+  function exportStatusText(status, detail) {
+    const value = detail || {};
+    switch (status) {
+      case EXPORT_STATUS.RUNNING:
+        return value.text || EXPORT_STATUS_TEXTS.running;
+      case EXPORT_STATUS.DONE:
+        return EXPORT_STATUS_TEXTS.done;
+      case EXPORT_STATUS.CANCELLED:
+        return EXPORT_STATUS_TEXTS.cancelled;
+      case EXPORT_STATUS.TIMEOUT:
+        return value.message || EXPORT_STATUS_TEXTS.timeout;
+      case EXPORT_STATUS.FAILED:
+        return value.message || EXPORT_STATUS_TEXTS.failed;
+      default:
+        return EXPORT_STATUS_TEXTS.idle;
+    }
+  }
+
+  /** The export panel may offer a retry and the settings. */
+  function exportActions(status) {
+    const failed = status === EXPORT_STATUS.FAILED || status === EXPORT_STATUS.TIMEOUT;
+    return {
+      retry: failed,
+      openSetting: failed,
+      cancel: status === EXPORT_STATUS.RUNNING,
+    };
+  }
+
   return {
     ADJUSTMENT_DEFAULTS,
     ADJUSTMENT_LIMITS,
@@ -280,6 +377,9 @@
     EVENTS,
     PHASE_TEXTS,
     TRANSITIONS,
+    PRIVACY_STATES,
+    EXPORT_STATUS,
+    EXPORT_STATUS_TEXTS,
     applyAdjustment,
     resetAdjustments,
     isDefaultState,
@@ -294,5 +394,8 @@
     nextPhase,
     phaseText,
     isBusyPhase,
+    privacyPopupView,
+    exportStatusText,
+    exportActions,
   };
 }));

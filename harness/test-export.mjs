@@ -1,5 +1,6 @@
 // Unit tests for the full-resolution export: the pure planner, the album
-// permission flow and the orchestrator, all with a mock host.
+// permission flow, the timeout wrapper and the orchestrator, all with a mock
+// host.
 //
 // The browser test (harness/test-export-browser.mjs) verifies that the tiled
 // render is identical to a single-pass render.
@@ -106,8 +107,8 @@ function coverCheck(plan) {
 
   // The padded halo buffer still fits into a texture.
   plan.tiles.forEach((tile) => {
-    assert.equal(tile.target.haloWidth, tile.width + 2 * tile.margin);
-    assert.equal(tile.target.haloHeight, tile.height + 2 * tile.margin);
+    assert.equal(tile.target.haloWidth, tile.width + 2 * plan.margin);
+    assert.equal(tile.target.haloHeight, tile.height + 2 * plan.margin);
     assert.ok(tile.target.haloWidth <= 4096);
     assert.ok(tile.target.haloHeight <= 4096);
   });
@@ -176,34 +177,49 @@ function coverCheck(plan) {
   assert.equal(target.longEdgePx, 2000);
 }
 
-// --- the permission flow ----------------------------------------------------
+// --- the mock host ----------------------------------------------------------
+
+// The timeouts are tiny: the tests must be fast, and every waiting path has
+// to end in a bounded time.
+const FAST_TIMEOUTS = Object.freeze({
+  default: 60,
+  hint: 40,
+  getSetting: 40,
+  permission: 60,
+  privacy: 60,
+  imageInfo: 60,
+  decode: 100,
+  encode: 100,
+  save: 60,
+});
 
 function createMockWx(options) {
   const settings = options || {};
   const calls = [];
   const state = {
     authSetting: settings.authSetting,
-    openSettingAuth: settings.openSettingAuth,
+  };
+  let saveCalls = 0;
+  const privacySubscribers = [];
+  const notifyPrivacy = (visible) => {
+    privacySubscribers.slice().forEach((listener) => listener({ visible }));
   };
   const api = {
     calls,
     state,
+    saveCalls: () => saveCalls,
     getSetting: (payload) => {
       calls.push('getSetting');
+      if (settings.getSettingNeverAnswers) {
+        // The platform never answers: the hint must not block the export.
+        return;
+      }
       setTimeout(() => payload.success({ authSetting: state.authSetting }), 0);
     },
     authorize: (payload) => {
       calls.push('authorize');
-      setTimeout(() => {
-        if (settings.authorizeFails) {
-          payload.fail({ errMsg: 'authorize:fail auth deny' });
-          return;
-        }
-        state.authSetting = Object.assign({}, state.authSetting, {
-          'scope.writePhotosAlbum': true,
-        });
-        payload.success({});
-      }, 0);
+      // wx.authorize is never called by the export; the mock never answers,
+      // so a regression would hang instead of passing silently.
     },
     showModal: (payload) => {
       calls.push('showModal');
@@ -213,142 +229,68 @@ function createMockWx(options) {
       calls.push('openSetting');
       setTimeout(() => {
         state.authSetting = Object.assign({}, state.authSetting, {
-          'scope.writePhotosAlbum': state.openSettingAuth,
+          'scope.writePhotosAlbum': settings.openSettingAuth,
         });
         payload.success({ authSetting: state.authSetting });
       }, 0);
     },
     saveImageToPhotosAlbum: (payload) => {
       calls.push('saveImageToPhotosAlbum');
+      saveCalls += 1;
+      if (settings.saveNeverAnswers) {
+        // The platform never answers: the save step must time out.
+        return;
+      }
       setTimeout(() => {
-        if (settings.saveFails) {
+        if (settings.saveFailsOnce) {
+          if (saveCalls === 1) {
+            payload.fail({ errMsg: settings.saveFails || 'saveImageToPhotosAlbum:fail auth deny' });
+            return;
+          }
+        } else if (settings.saveFails) {
           payload.fail({ errMsg: settings.saveFails });
           return;
         }
         payload.success({});
       }, 0);
     },
+    // The privacy adapter of the host: it stands for utils/privacy.js.
+    privacy: {
+      subscribe: (listener) => {
+        privacySubscribers.push(listener);
+        return () => {
+          const index = privacySubscribers.indexOf(listener);
+          if (index !== -1) {
+            privacySubscribers.splice(index, 1);
+          }
+        };
+      },
+      ensureAuthorized: (request) => {
+        calls.push('privacy');
+        if (settings.privacyNeverAnswers) {
+          // The consent is never given: the pre-flight must time out.
+          return new Promise(() => {});
+        }
+        if (settings.privacyPopupMs) {
+          // The popup is open for a while: the timeout of the step must be
+          // paused while the user reads the guide.
+          notifyPrivacy(true);
+          return new Promise((resolve) => {
+            setTimeout(() => {
+              notifyPrivacy(false);
+              resolve({ granted: true, reason: 'agreed' });
+            }, settings.privacyPopupMs);
+          });
+        }
+        return Promise.resolve({
+          granted: settings.privacyGranted !== false,
+          reason: settings.privacyReason || 'agreed',
+        });
+      },
+    },
   };
   return api;
 }
-
-async function permissionCase(name, wxOptions, expectation) {
-  const api = createMockWx(wxOptions);
-  const result = await Export.ensureAlbumPermission(api, {});
-  assert.equal(result.granted, expectation.granted, `${name}: granted`);
-  assert.equal(result.state, expectation.state, `${name}: state`);
-  if (expectation.message) {
-    assert.ok(
-      result.message.indexOf(expectation.message) !== -1,
-      `${name}: message "${result.message}" must mention "${expectation.message}"`
-    );
-  }
-  if (expectation.calls) {
-    assert.deepEqual(api.calls, expectation.calls, `${name}: calls`);
-  }
-  return api;
-}
-
-await permissionCase(
-  'authorized',
-  { authSetting: { 'scope.writePhotosAlbum': true } },
-  { granted: true, state: 'authorized', calls: ['getSetting'] }
-);
-
-await permissionCase(
-  'not asked',
-  { authSetting: {} },
-  { granted: true, state: 'authorized', calls: ['getSetting', 'authorize'] }
-);
-
-await permissionCase(
-  'not asked, refused',
-  { authSetting: {}, authorizeFails: true },
-  {
-    granted: false,
-    state: 'cancelled',
-    message: '相册',
-    calls: ['getSetting', 'authorize'],
-  }
-);
-
-await permissionCase(
-  'denied, the settings grant it',
-  {
-    authSetting: { 'scope.writePhotosAlbum': false },
-    modalConfirm: true,
-    openSettingAuth: true,
-  },
-  {
-    granted: true,
-    state: 'authorized',
-    calls: ['getSetting', 'showModal', 'openSetting'],
-  }
-);
-
-await permissionCase(
-  'denied, the modal is cancelled',
-  {
-    authSetting: { 'scope.writePhotosAlbum': false },
-    modalConfirm: false,
-  },
-  {
-    granted: false,
-    state: 'cancelled',
-    message: '已取消',
-    calls: ['getSetting', 'showModal'],
-  }
-);
-
-await permissionCase(
-  'denied, the settings keep refusing',
-  {
-    authSetting: { 'scope.writePhotosAlbum': false },
-    modalConfirm: true,
-    openSettingAuth: false,
-  },
-  {
-    granted: false,
-    state: 'denied',
-    message: '设置',
-    calls: ['getSetting', 'showModal', 'openSetting'],
-  }
-);
-
-{
-  // A host that cannot report the settings fails safely.
-  const api = {
-    getSetting: (payload) => payload.fail({ errMsg: 'getSetting:fail' }),
-  };
-  const result = await Export.ensureAlbumPermission(api, {});
-  assert.equal(result.granted, false);
-  assert.equal(result.state, 'unknown');
-}
-
-{
-  // The save step maps the WeChat errors to Chinese messages.
-  const ok = await Export.saveToAlbum(
-    createMockWx({}),
-    'wxfile://tmp_export.jpg'
-  );
-  assert.equal(ok.ok, true);
-
-  const denied = await Export.saveToAlbum(
-    createMockWx({ saveFails: 'saveImageToPhotosAlbum:fail auth deny' }),
-    'wxfile://tmp_export.jpg'
-  );
-  assert.equal(denied.ok, false);
-  assert.ok(denied.message.indexOf('权限') !== -1);
-
-  const cancelled = await Export.saveToAlbum(
-    createMockWx({ saveFails: 'saveImageToPhotosAlbum:fail cancel' }),
-    'wxfile://tmp_export.jpg'
-  );
-  assert.equal(cancelled.ok, false);
-  assert.equal(cancelled.cancelled, true);
-}
-
-// --- the orchestrator -------------------------------------------------------
 
 function createMockHost(options) {
   const settings = options || {};
@@ -356,6 +298,7 @@ function createMockHost(options) {
   const api = createMockWx(settings.wx || {});
   const host = {
     events,
+    timeouts: settings.timeouts || FAST_TIMEOUTS,
     permission: api,
     getImageInfo: async () => {
       events.push('getImageInfo');
@@ -395,13 +338,13 @@ function createMockHost(options) {
       }
       return 'wxfile://tmp_export.jpg';
     },
-    save: async (filePath) => {
-      events.push('save');
-      if (settings.saveFails) {
-        return { ok: false, message: '保存失败，请稍后重试。' };
-      }
-      return { ok: true, filePath };
-    },
+    save: (filePath) => new Promise((resolve, reject) => {
+      api.saveImageToPhotosAlbum({
+        filePath,
+        success: (result) => resolve(result),
+        fail: (error) => reject(error),
+      });
+    }),
     yield: async () => {
       events.push('yield');
     },
@@ -409,10 +352,8 @@ function createMockHost(options) {
   return host;
 }
 
-{
-  const host = createMockHost({ wx: { authSetting: { 'scope.writePhotosAlbum': true } } });
-  const stages = [];
-  const result = await Export.exportImage({
+function exportOptions(host, extra) {
+  return Object.assign({
     host,
     src: 'wxfile://tmp_original.jpg',
     stockId: 'portra400',
@@ -421,8 +362,191 @@ function createMockHost(options) {
     intensity: 1,
     halationStrength: 1,
     maxTextureSize: 4096,
-    onProgress: (progress) => stages.push(progress.stage),
+  }, extra || {});
+}
+
+// --- the permission flow ----------------------------------------------------
+
+async function permissionCase(name, wxOptions, expectation) {
+  const api = createMockWx(wxOptions);
+  const result = await Export.ensureAlbumPermission(api, {
+    timeouts: FAST_TIMEOUTS,
   });
+  assert.equal(result.granted, expectation.granted, `${name}: granted`);
+  assert.equal(result.state, expectation.state, `${name}: state`);
+  if (expectation.message) {
+    assert.ok(
+      result.message.indexOf(expectation.message) !== -1,
+      `${name}: message "${result.message}" must mention "${expectation.message}"`
+    );
+  }
+  if (expectation.calls) {
+    assert.deepEqual(api.calls, expectation.calls, `${name}: calls`);
+  }
+  return api;
+}
+
+await permissionCase(
+  'authorized',
+  { authSetting: { 'scope.writePhotosAlbum': true } },
+  { granted: true, state: 'authorized', calls: ['privacy', 'getSetting'] }
+);
+
+await permissionCase(
+  'not asked: the save asks for the scope itself',
+  { authSetting: {} },
+  { granted: true, state: 'unknown', calls: ['privacy', 'getSetting'] }
+);
+
+await permissionCase(
+  'the privacy guide is refused',
+  { privacyGranted: false, privacyReason: 'refused' },
+  {
+    granted: false,
+    state: 'privacy-denied',
+    message: '隐私',
+    calls: ['privacy'],
+  }
+);
+
+await permissionCase(
+  'denied, the settings grant it',
+  {
+    authSetting: { 'scope.writePhotosAlbum': false },
+    modalConfirm: true,
+    openSettingAuth: true,
+  },
+  {
+    granted: true,
+    state: 'authorized',
+    calls: ['privacy', 'getSetting', 'showModal', 'openSetting'],
+  }
+);
+
+await permissionCase(
+  'denied, the modal is cancelled',
+  {
+    authSetting: { 'scope.writePhotosAlbum': false },
+    modalConfirm: false,
+  },
+  {
+    granted: false,
+    state: 'cancelled',
+    message: '已取消',
+    calls: ['privacy', 'getSetting', 'showModal'],
+  }
+);
+
+await permissionCase(
+  'denied, the settings keep refusing',
+  {
+    authSetting: { 'scope.writePhotosAlbum': false },
+    modalConfirm: true,
+    openSettingAuth: false,
+  },
+  {
+    granted: false,
+    state: 'denied',
+    message: '设置',
+    calls: ['privacy', 'getSetting', 'showModal', 'openSetting'],
+  }
+);
+
+{
+  // The hint may never answer: it must not block the export.
+  const api = createMockWx({ getSettingNeverAnswers: true });
+  const started = Date.now();
+  const result = await Export.ensureAlbumPermission(api, { timeouts: FAST_TIMEOUTS });
+  const elapsed = Date.now() - started;
+  assert.equal(result.granted, true);
+  assert.equal(result.state, 'unknown');
+  assert.ok(elapsed < 1000, `the hint blocked the export for ${elapsed}ms`);
+  // wx.authorize is never called: the platform wants the target interface to
+  // be called and its authorisation error to be handled.
+  assert.ok(!api.calls.includes('authorize'));
+}
+
+{
+  // The privacy pre-flight never answers: it times out with a clear error.
+  const api = createMockWx({ privacyNeverAnswers: true });
+  const result = await Export.ensureAlbumPermission(api, { timeouts: FAST_TIMEOUTS });
+  assert.equal(result.granted, false);
+  assert.equal(result.state, 'timeout');
+  assert.ok(result.message.indexOf('超时') !== -1, result.message);
+}
+
+{
+  // A host that cannot report the settings fails safely.
+  const api = {
+    getSetting: (payload) => payload.fail({ errMsg: 'getSetting:fail' }),
+  };
+  const result = await Export.ensureAlbumPermission(api, { timeouts: FAST_TIMEOUTS });
+  assert.equal(result.granted, true, 'the hint failure must not block the export');
+  assert.equal(result.state, 'unknown');
+}
+
+// --- the save errors --------------------------------------------------------
+
+{
+  // The save step maps the WeChat errors to Chinese messages.
+  const ok = await Export.saveToAlbum(createMockWx({}), 'wxfile://tmp_export.jpg', {
+    timeouts: FAST_TIMEOUTS,
+  });
+  assert.equal(ok.ok, true);
+
+  const denied = await Export.saveToAlbum(
+    createMockWx({ saveFails: 'saveImageToPhotosAlbum:fail auth deny' }),
+    'wxfile://tmp_export.jpg',
+    { timeouts: FAST_TIMEOUTS }
+  );
+  assert.equal(denied.ok, false);
+  assert.equal(denied.authDenied, true);
+  assert.ok(denied.message.indexOf('权限') !== -1);
+
+  const cancelled = await Export.saveToAlbum(
+    createMockWx({ saveFails: 'saveImageToPhotosAlbum:fail cancel' }),
+    'wxfile://tmp_export.jpg',
+    { timeouts: FAST_TIMEOUTS }
+  );
+  assert.equal(cancelled.ok, false);
+  assert.equal(cancelled.cancelled, true);
+
+  // The privacy errors have their own messages.
+  const privacy = await Export.saveToAlbum(
+    createMockWx({ saveFails: 'saveImageToPhotosAlbum:fail privacy permission is not authorized' }),
+    'wxfile://tmp_export.jpg',
+    { timeouts: FAST_TIMEOUTS }
+  );
+  assert.equal(privacy.privacyDenied, true);
+  assert.ok(privacy.message.indexOf('隐私') !== -1);
+
+  const notDeclared = await Export.saveToAlbum(
+    createMockWx({ saveFails: 'saveImageToPhotosAlbum:fail api scope is not declared in the privacy agreement' }),
+    'wxfile://tmp_export.jpg',
+    { timeouts: FAST_TIMEOUTS }
+  );
+  assert.equal(notDeclared.privacyNotDeclared, true);
+  assert.ok(notDeclared.message.indexOf('用户隐私保护指引') !== -1);
+
+  // A save that never answers times out with the step and the elapsed time.
+  const timeout = await Export.saveToAlbum(
+    createMockWx({ saveNeverAnswers: true }),
+    'wxfile://tmp_export.jpg',
+    { timeouts: FAST_TIMEOUTS }
+  );
+  assert.equal(timeout.ok, false);
+  assert.equal(timeout.timeout, true);
+  assert.ok(timeout.message.indexOf('超时') !== -1, timeout.message);
+}
+
+// --- the orchestrator -------------------------------------------------------
+
+{
+  const host = createMockHost({ wx: { authSetting: { 'scope.writePhotosAlbum': true } } });
+  const stages = [];
+  const result = await Export.exportImage(exportOptions(host, {
+    onProgress: (progress) => stages.push(progress.stage),
+  }));
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.equal(result.filePath, 'wxfile://tmp_export.jpg');
   assert.equal(result.plan.width, 3000);
@@ -438,26 +562,25 @@ function createMockHost(options) {
   assert.ok(host.events.includes('release'));
   // The progress text is Chinese and mentions the tile counter.
   assert.ok(Export.stageText('render', { index: 1, total: 3 }).indexOf('1/3') !== -1);
+  // wx.authorize is never called.
+  assert.ok(!host.permission.calls.includes('authorize'));
+  // The steps are logged: every step has a start and an end entry.
+  const steps = result.steps;
+  assert.ok(steps.length > 0);
+  assert.ok(steps.some((entry) => entry.step === 'privacy'));
+  assert.ok(steps.some((entry) => entry.step === 'save' && entry.phase === 'ok'));
 }
 
 {
   // A cancelled export stops at the next tile and releases the buffers.
   const host = createMockHost({ wx: { authSetting: { 'scope.writePhotosAlbum': true } } });
   let renders = 0;
-  const result = await Export.exportImage({
-    host,
-    src: 'wxfile://tmp_original.jpg',
-    stockId: 'portra400',
-    adjustments: { ev: 0, temperature: 0, tint: 0, contrast: 0, saturation: 1, intensity: 1 },
-    effects: { grain: 1, halation: 1, vignette: 0 },
-    intensity: 1,
-    halationStrength: 1,
-    maxTextureSize: 4096,
+  const result = await Export.exportImage(exportOptions(host, {
     isCancelled: () => {
       renders += 1;
       return renders > 1;
     },
-  });
+  }));
   assert.equal(result.ok, false);
   assert.equal(result.cancelled, true);
   assert.ok(host.events.includes('release'));
@@ -465,46 +588,193 @@ function createMockHost(options) {
 }
 
 {
-  // A denied permission stops the export before the picture is decoded.
-  const host = createMockHost({ wx: { authSetting: { 'scope.writePhotosAlbum': false } } });
-  const result = await Export.exportImage({
-    host,
-    src: 'wxfile://tmp_original.jpg',
-    stockId: 'portra400',
-    adjustments: { ev: 0, temperature: 0, tint: 0, contrast: 0, saturation: 1, intensity: 1 },
-    effects: { grain: 1, halation: 1, vignette: 0 },
-    intensity: 1,
-    halationStrength: 1,
-    maxTextureSize: 4096,
+  // The cancel signal also stops an export whose save never answers.
+  const host = createMockHost({
+    wx: { authSetting: { 'scope.writePhotosAlbum': true }, saveNeverAnswers: true },
   });
+  const signal = Export.createCancelSignal();
+  const started = Date.now();
+  const pending = Export.exportImage(exportOptions(host, {
+    cancelSignal: signal,
+    isCancelled: () => signal.isCancelled(),
+  }));
+  setTimeout(() => signal.cancel(), 20);
+  const result = await pending;
+  const elapsed = Date.now() - started;
+  assert.equal(result.ok, false);
+  assert.equal(result.cancelled, true);
+  assert.ok(elapsed < 1000, `the cancellation took ${elapsed}ms`);
+}
+
+{
+  // A refused privacy guide stops the export before the picture is decoded.
+  const host = createMockHost({ wx: { privacyGranted: false, privacyReason: 'refused' } });
+  const result = await Export.exportImage(exportOptions(host));
   assert.equal(result.ok, false);
   assert.equal(result.stage, 'permission');
+  assert.ok(result.message.indexOf('隐私') !== -1);
   assert.ok(!host.events.includes('decode:3000x2000'));
+}
+
+{
+  // A save that never answers must not freeze the export.
+  const host = createMockHost({
+    wx: { authSetting: { 'scope.writePhotosAlbum': true }, saveNeverAnswers: true },
+  });
+  const result = await Export.exportImage(exportOptions(host));
+  assert.equal(result.ok, false);
+  assert.equal(result.stage, 'save');
+  assert.equal(result.timeout, true);
+  assert.ok(result.message.indexOf('超时') !== -1, result.message);
+  // The step log names the step and the elapsed time.
+  const timeoutEntry = result.steps.find((entry) => entry.phase === 'timeout');
+  assert.ok(timeoutEntry, 'the timeout must be logged');
+  assert.equal(timeoutEntry.step, 'save');
+  assert.ok(timeoutEntry.elapsed >= 0);
+}
+
+{
+  // The auth-deny error opens the settings and the save is retried once.
+  const host = createMockHost({
+    wx: {
+      authSetting: { 'scope.writePhotosAlbum': true },
+      saveFailsOnce: true,
+      saveFails: 'saveImageToPhotosAlbum:fail auth deny',
+      modalConfirm: true,
+      openSettingAuth: true,
+    },
+  });
+  const result = await Export.exportImage(exportOptions(host));
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(
+    host.permission.calls.filter((call) => call !== 'privacy' && call !== 'getSetting'),
+    ['saveImageToPhotosAlbum', 'showModal', 'openSetting', 'saveImageToPhotosAlbum']
+  );
+  assert.equal(host.permission.saveCalls(), 2);
+}
+
+{
+  // The settings keep refusing: the export fails with a clear message.
+  const host = createMockHost({
+    wx: {
+      authSetting: { 'scope.writePhotosAlbum': true },
+      saveFailsOnce: true,
+      saveFails: 'saveImageToPhotosAlbum:fail auth deny',
+      modalConfirm: true,
+      openSettingAuth: false,
+    },
+  });
+  const result = await Export.exportImage(exportOptions(host));
+  assert.equal(result.ok, false);
+  assert.equal(result.stage, 'save');
+  assert.ok(result.message.indexOf('设置') !== -1, result.message);
+  // The save is not retried forever.
+  assert.equal(host.permission.saveCalls(), 1);
+}
+
+{
+  // A late answer after the timeout is ignored: the step completes once.
+  const host = createMockHost({ wx: { authSetting: { 'scope.writePhotosAlbum': true } } });
+  let lateResolve = null;
+  host.save = () => new Promise((resolve, reject) => {
+    lateResolve = () => resolve({});
+    setTimeout(() => reject({ errMsg: 'saveImageToPhotosAlbum:fail too late' }), 200);
+  });
+  const result = await Export.exportImage(exportOptions(host));
+  assert.equal(result.ok, false);
+  assert.equal(result.timeout, true);
+  // The late answer arrives after the export has finished.
+  lateResolve();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(result.ok, false, 'a late answer must not complete the step again');
+  assert.equal(result.timeout, true);
 }
 
 {
   // A failing save is reported, not thrown.
   const host = createMockHost({
-    wx: { authSetting: { 'scope.writePhotosAlbum': true } },
-    saveFails: true,
+    wx: {
+      authSetting: { 'scope.writePhotosAlbum': true },
+      saveFails: 'saveImageToPhotosAlbum:fail saveImageToPhotosAlbum:fail',
+    },
   });
-  const result = await Export.exportImage({
-    host,
-    src: 'wxfile://tmp_original.jpg',
-    stockId: 'portra400',
-    adjustments: { ev: 0, temperature: 0, tint: 0, contrast: 0, saturation: 1, intensity: 1 },
-    effects: { grain: 1, halation: 1, vignette: 0 },
-    intensity: 1,
-    halationStrength: 1,
-    maxTextureSize: 4096,
-  });
+  const result = await Export.exportImage(exportOptions(host));
   assert.equal(result.ok, false);
   assert.equal(result.stage, 'save');
   assert.ok(result.message.indexOf('保存失败') !== -1);
 }
 
+{
+  // The privacy pre-flight that never answers times out instead of hanging.
+  const host = createMockHost({
+    wx: { authSetting: { 'scope.writePhotosAlbum': true }, privacyNeverAnswers: true },
+  });
+  const started = Date.now();
+  const result = await Export.exportImage(exportOptions(host));
+  const elapsed = Date.now() - started;
+  assert.equal(result.ok, false);
+  assert.equal(result.timeout, true);
+  assert.ok(elapsed < 1000, `the privacy pre-flight blocked for ${elapsed}ms`);
+  assert.ok(!host.events.includes('decode:3000x2000'));
+}
+
+// --- the step log ------------------------------------------------------------
+
+{
+  const StepLog = require('../utils/step-log.js');
+  const log = StepLog.createStepLog(3);
+  log.push({ step: 'a1', phase: 'start', elapsed: 0, detail: '' });
+  log.push({ step: 'a2', phase: 'ok', elapsed: 12, detail: { ok: true } });
+  log.push({ step: 'b', phase: 'error', elapsed: 5, detail: 'boom' });
+  log.push({ step: 'c', phase: 'timeout', elapsed: 8000, detail: 'no answer' });
+  const entries = log.entries();
+  assert.equal(entries.length, 3, 'the ring buffer is bounded');
+  assert.equal(entries[0].step, 'a2', 'the oldest entry is dropped');
+  assert.ok(log.text().indexOf('c timeout 8000ms no answer') !== -1, log.text());
+  assert.ok(log.text().indexOf('b error 5ms boom') !== -1, log.text());
+  // The objects are serialised, not printed as "[object Object]".
+  assert.ok(log.text().indexOf('{"ok":true}') !== -1, log.text());
+}
+
+{
+  // The popup waits for the user: the timeout of the step is paused while
+  // it is open, so the export does not fail on a slow decision.
+  const host = createMockHost({
+    wx: {
+      authSetting: { 'scope.writePhotosAlbum': true },
+      privacyPopupMs: 150,
+    },
+  });
+  const result = await Export.exportImage(exportOptions(host));
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.timeout, undefined);
+}
+
+{
+  // The cancel also works while the privacy popup is open.
+  const host = createMockHost({
+    wx: {
+      authSetting: { 'scope.writePhotosAlbum': true },
+      privacyPopupMs: 500,
+    },
+  });
+  const signal = Export.createCancelSignal();
+  const started = Date.now();
+  const pending = Export.exportImage(exportOptions(host, {
+    cancelSignal: signal,
+    isCancelled: () => signal.isCancelled(),
+  }));
+  setTimeout(() => signal.cancel(), 20);
+  const result = await pending;
+  const elapsed = Date.now() - started;
+  assert.equal(result.ok, false);
+  assert.equal(result.cancelled, true);
+  assert.ok(elapsed < 400, `the cancellation took ${elapsed}ms`);
+}
+
 console.log(
   'Export tests: PASS (size caps, tile coverage/margins, permission flow ' +
-  '(authorized, not asked, refused, denied+settings, cancel), save errors, ' +
+  '(privacy pre-flight, hint, denied+settings, cancel), save errors, ' +
+  'timeouts (getSetting, privacy, save), auth-deny recovery, late answers, ' +
   'orchestrator stages, cancellation)'
 );
