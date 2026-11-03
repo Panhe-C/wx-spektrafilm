@@ -92,11 +92,16 @@ def make_contact_sheet(pairs: list[dict], photos: list[str], stocks: list[str]) 
     sheet.save(OUT / "contact-shader.jpg", quality=90, optimize=True)
 
 
-def bilinear_source_sample(source: np.ndarray, width: int, height: int) -> np.ndarray:
-    """Match the renderer's top-row-first, pixel-centre LINEAR image samples."""
+def bilinear_source_sample(source: np.ndarray, width: int, height: int,
+                           uv_offset=None, uv_scale=None) -> np.ndarray:
+    """Match top-row-first, pixel-centre LINEAR samples and optional centre crop."""
     rgb = source.astype(np.float32) * np.float32(1.0 / 255.0)
-    x = (np.arange(width, dtype=np.float32) + np.float32(0.5)) * np.float32(source.shape[1] / width) - np.float32(0.5)
-    y = (np.arange(height, dtype=np.float32) + np.float32(0.5)) * np.float32(source.shape[0] / height) - np.float32(0.5)
+    offset = np.float32(uv_offset or [0.0, 0.0])
+    scale = np.float32(uv_scale or [1.0, 1.0])
+    u = (np.arange(width, dtype=np.float32) + np.float32(0.5)) / np.float32(width)
+    v = (np.arange(height, dtype=np.float32) + np.float32(0.5)) / np.float32(height)
+    x = (offset[0] + u * scale[0]) * np.float32(source.shape[1]) - np.float32(0.5)
+    y = (offset[1] + v * scale[1]) * np.float32(source.shape[0]) - np.float32(0.5)
     x0 = np.floor(x).astype(np.intp)
     y0 = np.floor(y).astype(np.intp)
     fx = (x - x0).astype(np.float32)
@@ -261,7 +266,10 @@ def main() -> int:
     original = read_rgb(render_results["pairs"][0]["input"])
     for rendered in render_results.get("thumbnails", []):
         actual = read_rgb(rendered["file"])
-        sampled = bilinear_source_sample(original, rendered["width"], rendered["height"])
+        sampled = bilinear_source_sample(
+            original, rendered["width"], rendered["height"],
+            rendered.get("imageUvOffset"), rendered.get("imageUvScale"),
+        )
         expected = rounded(apply_strip_lut_srgb_float(
             sampled, ROOT / "subpackages" / "luts" / manifest[rendered["stock"]]["file"],
         ))

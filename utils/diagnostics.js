@@ -78,6 +78,10 @@
       '',
       '[CANVAS]',
       `node: ${number(canvas.nodeWidth, 1)}x${number(canvas.nodeHeight, 1)} css px`,
+      `canvasRect: ${json(canvas.canvasRect || null)}`,
+      `stageRect: ${json(canvas.stageRect || null)}`,
+      `bufferGeometry: ${json(canvas.bufferGeometry || null)}`,
+      `lastPresentation: ${json(canvas.presentation || null)}`,
       `drawingBuffer: ${canvas.drawingBufferWidth || 0}x${canvas.drawingBufferHeight || 0}`,
       `canvas.width/height: ${canvas.width || 0}x${canvas.height || 0}`,
       `viewport: ${pixel(canvas.viewport)}`,
@@ -86,6 +90,9 @@
       '',
       '[PHOTO SOURCE]',
       json(value.photo || { type: 'none' }),
+      '',
+      '[THUMBNAIL GEOMETRY]',
+      json(value.thumbnail || null),
       '',
       '[UPLOAD]',
       `preferred: ${upload.preferredStrategy || '-'}; active: ${upload.activeStrategy || '-'}`,
@@ -140,6 +147,30 @@
       `expected=${pixel(solid.expected)} gpu=${pixel(solid.pixel)} ` +
       `exact=${solid.exact === true} error=${solid.error || '-'}`
     );
+    lines.push('', '[DEFAULT FRAMEBUFFER versus FBO]');
+    const presented = tests.defaultFramebuffer || {};
+    if (presented.available) {
+      lines.push(
+        `buffer=${presented.bufferWidth}x${presented.bufferHeight} ` +
+        `viewport=${pixel(presented.viewport)} photoRect=${json(presented.photoRect)}`
+      );
+      (presented.samples || []).forEach((sample) => {
+        lines.push(
+          `  ${sample.name} (${sample.x},${sample.y}) default=${pixel(sample.defaultPixel)} ` +
+          `fbo=${pixel(sample.fbo)} maxDiff=${sample.maxDiff}`
+        );
+      });
+      lines.push(`  maxDiff=${presented.maxDiff}`);
+      if (presented.letterbox) {
+        lines.push(
+          `  letterbox (${presented.letterbox.x},${presented.letterbox.y}) ` +
+          `default=${pixel(presented.letterbox.defaultPixel)} ` +
+          `expected=${pixel(presented.letterbox.expected)} exact=${presented.letterbox.exact}`
+        );
+      }
+    } else {
+      lines.push(`unavailable: ${presented.reason || presented.error || 'unknown'}`);
+    }
     lines.push('', '[PHOTO TEXTURE: corners + centre]');
     pushSampleLines(lines, tests.photoTexture);
     lines.push('', '[LUT TEXTURE: black + white corners]');
@@ -205,14 +236,17 @@
       generatedAt: new Date().toISOString(),
       app: settings.app || {},
       photo: settings.photo || { type: 'none' },
+      thumbnail: settings.thumbnail || null,
       gl: { available: false },
       canvas: {
         nodeWidth: settings.nodeSize && settings.nodeSize.width,
         nodeHeight: settings.nodeSize && settings.nodeSize.height,
+        canvasRect: settings.canvasRect || null,
+        stageRect: settings.stageRect || null,
         width: canvas && canvas.width,
         height: canvas && canvas.height,
         pixelRatio: settings.pixelRatio,
-        sizingRule: 'photo pixels; CSS contain (empty preview uses node size × pixelRatio)',
+        sizingRule: 'stable stage CSS size × pixelRatio; centred GL aspect-fit viewport',
       },
       upload: {},
       textures: [],
@@ -234,10 +268,21 @@
       report.upload = state.upload || {};
       report.textures = state.textures || [];
       report.glErrors = state.glErrors || [];
+      report.canvas.bufferGeometry = state.bufferGeometry || null;
+      report.canvas.presentation = state.presentation || null;
       report.tests = typeof renderer.runDiagnostics === 'function'
         ? renderer.runDiagnostics()
         : { error: 'renderer diagnostics are unavailable' };
       report.glErrors = report.tests.glErrors || report.glErrors;
+      if (report.tests.defaultFramebuffer && report.tests.defaultFramebuffer.available) {
+        report.canvas.presentation = {
+          framebuffer: 'default',
+          bufferWidth: report.tests.defaultFramebuffer.bufferWidth,
+          bufferHeight: report.tests.defaultFramebuffer.bufferHeight,
+          viewport: report.tests.defaultFramebuffer.viewport,
+          photoRect: report.tests.defaultFramebuffer.photoRect,
+        };
+      }
       const tests = report.tests;
       const checks = {
         solidExact: !!(tests.solidColour && tests.solidColour.exact),
@@ -246,6 +291,10 @@
         lutWithin1: !tests.lutTexture || !tests.lutTexture.available || tests.lutTexture.maxDiff <= 1,
         fullZeroWithin1: !tests.fullShader || !tests.fullShader.available ||
           tests.fullShader.intensity0MaxDiff <= 1,
+        defaultMatchesFbo: !tests.defaultFramebuffer || !tests.defaultFramebuffer.available ||
+          tests.defaultFramebuffer.maxDiff <= 1,
+        letterboxExact: !tests.defaultFramebuffer || !tests.defaultFramebuffer.available ||
+          !tests.defaultFramebuffer.letterbox || tests.defaultFramebuffer.letterbox.exact,
         noGlErrors: (report.glErrors || []).length === 0,
       };
       report.summary = {

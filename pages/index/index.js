@@ -32,7 +32,7 @@ Page({
     aboutOpen: false,
     comparing: false,
     extendedLoading: false,
-    canvasStyle: 'width: 1px; height: 1px;',
+    canvasStyle: 'width: 100%; height: 100%;',
     adjustments: {
       ev: 0,
       temperature: 0,
@@ -101,8 +101,15 @@ Page({
     this.observer = null;
     this.visibleStockIds = Object.create(null);
     this.diagnosticsRunning = false;
-    this.canvasNodeSize = null;
     this.photoSourceInfo = { type: 'none' };
+    this.lastThumbnailGeometry = null;
+    this.previewScheduled = false;
+    this.previewFrames = 0;
+    this.previewTimer = null;
+    this.canvasNodeSize = null;
+    this.canvasRect = null;
+    this.stageRect = null;
+    this.lastBufferGeometry = null;
     try {
       const system = wx.getSystemInfoSync();
       this.devicePixelRatio = system.pixelRatio || 1;
@@ -149,9 +156,9 @@ Page({
   },
 
   onResize() {
-    if (this.photoSize) {
-      this.fitCanvas(this.photoSize.width, this.photoSize.height);
-    }
+    // Re-query both native canvas and stage on rotation/resizing; never infer
+    // the surface from the photo's dimensions.
+    this.fitCanvas().then(() => this.schedulePreviewRender(true));
   },
 
   onUnload() {
@@ -191,6 +198,12 @@ Page({
       clearTimeout(this.readoutTimer);
       this.readoutTimer = null;
     }
+    if (this.previewTimer) {
+      clearTimeout(this.previewTimer);
+      this.previewTimer = null;
+    }
+    this.previewScheduled = false;
+    this.previewFrames = 0;
   },
 
   initialiseRenderer() {
@@ -212,12 +225,12 @@ Page({
             fragmentSource: shaders.lutFragment,
             haloFragmentSource: shaders.haloFragment,
           });
-          // Empty state: the drawing buffer follows node CSS size × DPR.
-          // Loaded state deliberately switches to one buffer pixel per
-          // prepared photo pixel (see loadPhoto), with CSS doing only contain.
-          this.renderer.resize(
-            Math.max(1, Math.round(this.canvasNodeSize.width * this.devicePixelRatio)),
-            Math.max(1, Math.round(this.canvasNodeSize.height * this.devicePixelRatio))
+          // The native node always fills the stage. Its buffer is based only
+          // on stage CSS geometry × DPR and actual GL implementation limits.
+          this.renderer.resizeToCssSize(
+            this.canvasNodeSize.width,
+            this.canvasNodeSize.height,
+            this.devicePixelRatio
           );
           this.renderer.setEffects(this.effects);
           this.setData({ ready: true, error: '' });
@@ -321,6 +334,10 @@ Page({
         height: prepared.height,
         sourceWidth: prepared.sourceWidth,
         sourceHeight: prepared.sourceHeight,
+        infoWidth: prepared.infoWidth,
+        infoHeight: prepared.infoHeight,
+        decodeCanvasWidth: prepared.decodeCanvasWidth,
+        decodeCanvasHeight: prepared.decodeCanvasHeight,
         orientation: prepared.orientation,
         engineApplied: prepared.engineApplied,
       };
@@ -331,14 +348,13 @@ Page({
         prepared.release();
         return;
       }
-      await this.fitCanvas(prepared.width, prepared.height);
+      await this.fitCanvas();
       if (operation !== this.operationId) {
         prepared.release();
         return;
       }
-      // Loaded drawing buffer = oriented photo texture size. Set both canvas
-      // dimensions and viewport before upload/draw; never rely on CSS size.
-      this.renderer.resize(prepared.width, prepared.height);
+      // The stage-sized native surface was already settled by fitCanvas().
+      // Upload the photo without changing canvas.width/height.
       let photoUpload;
       try {
         photoUpload = this.renderer.setPhoto(
@@ -356,7 +372,7 @@ Page({
       if (photoUpload.photoAllBlack) {
         this.setData({ error: '照片读取为全黑，可在 关于 → 诊断 查看' });
       }
-      this.renderer.render(0);
+      this.schedulePreviewRender(true);
 
       this.transition('decoded');
       const stocks = await this.ensureLuts();
@@ -677,11 +693,52 @@ Page({
     });
   },
 
+  schedulePreviewRender(extraFrame) {
+    if (!this.renderer || !this.data.hasPhoto) {
+      this.previewFrames = 0;
+      return;
+    }
+    this.previewFrames = Math.max(this.previewFrames || 0, extraFrame ? 2 : 1);
+    if (this.previewScheduled) {
+      return;
+    }
+    this.previewScheduled = true;
+    const callback = () => {
+      this.previewScheduled = false;
+      this.previewTimer = null;
+      if (!this.renderer || !this.data.hasPhoto) {
+        this.previewFrames = 0;
+        return;
+      }
+      if (ui.needsExtendedLut(this.adjustments) && this.activeStock &&
+        this.activeStock.extended && !this.renderer.hasExtendedLut()) {
+        this.previewFrames = 0;
+        this.ensureActiveExtended();
+        return;
+      }
+      try {
+        this.renderer.render(this.comparing ? 0 : this.adjustments.intensity);
+      } catch (error) {
+        this.previewFrames = 0;
+        this.showError(error.message);
+        return;
+      }
+      this.previewFrames = Math.max(0, this.previewFrames - 1);
+      if (this.previewFrames > 0) {
+        this.schedulePreviewRender(false);
+      }
+    };
+    if (this.canvas && typeof this.canvas.requestAnimationFrame === 'function') {
+      this.canvas.requestAnimationFrame(callback);
+    } else {
+      this.previewTimer = setTimeout(callback, 16);
+    }
+  },
+
   renderPreview() {
     if (!this.renderer || !this.data.hasPhoto) {
       return;
     }
-    const intensity = this.comparing ? 0 : this.adjustments.intensity;
     if (ui.needsExtendedLut(this.adjustments) &&
       this.activeStock && this.activeStock.extended &&
       !this.renderer.hasExtendedLut()) {
@@ -691,7 +748,7 @@ Page({
       return;
     }
     try {
-      this.renderer.render(intensity);
+      this.schedulePreviewRender(false);
     } catch (error) {
       this.showError(error.message);
     }
@@ -736,9 +793,7 @@ Page({
     }
     this.comparing = true;
     this.setData({ comparing: true });
-    if (this.renderer) {
-      this.renderer.render(0);
-    }
+    this.schedulePreviewRender(false);
   },
 
   onPreviewTouchEnd() {
@@ -747,9 +802,7 @@ Page({
     }
     this.comparing = false;
     this.setData({ comparing: false });
-    if (this.renderer) {
-      this.renderer.render(this.adjustments.intensity);
-    }
+    this.schedulePreviewRender(false);
   },
 
   onPreviewTouchCancel() {
@@ -762,6 +815,7 @@ Page({
     this.thumbQueue = [];
     this.thumbRunning = false;
     this.thumbs = Object.create(null);
+    this.lastThumbnailGeometry = null;
     this.visibleStockIds = Object.create(null);
     if (this.thumbTimer) {
       clearTimeout(this.thumbTimer);
@@ -825,11 +879,18 @@ Page({
     if (operation !== this.operationId) {
       return;
     }
-    const size = ui.thumbnailSize(this.photoSize.width, this.photoSize.height);
+    const geometry = thumbnails.thumbnailGeometry(this.photoSize.width, this.photoSize.height);
+    this.lastThumbnailGeometry = Object.assign({
+      stockId,
+      photoWidth: this.photoSize.width,
+      photoHeight: this.photoSize.height,
+    }, geometry);
     this.renderer.setLut(images.base, stock, images.extended);
     const result = this.renderer.renderToPixels({
-      width: size.width,
-      height: size.height,
+      width: geometry.width,
+      height: geometry.height,
+      imageUvOffset: geometry.imageUvOffset,
+      imageUvScale: geometry.imageUvScale,
       intensity: 1,
       adjustments: Adjustments.DEFAULTS,
       // The preset thumbnails never include the spatial effects.
@@ -841,8 +902,8 @@ Page({
     }
     const exported = await thumbnails.exportPixels({
       pixels: result.pixels,
-      width: size.width,
-      height: size.height,
+      width: geometry.width,
+      height: geometry.height,
       fileName: `thumb-${stockId}`,
     });
     if (operation !== this.operationId) {
@@ -863,7 +924,7 @@ Page({
       return;
     }
     this.renderer.setLut(images.base, stock, images.extended);
-    this.renderer.render(this.comparing ? 0 : this.adjustments.intensity);
+    this.schedulePreviewRender(false);
   },
 
   setThumbnail(stockId, src) {
@@ -932,16 +993,17 @@ Page({
 
   // --- panel toggles and about --------------------------------------------
 
-  queryCanvasNodeSize() {
-    return new Promise((resolve) => {
+  queryPresentationGeometry() {
+    const readRect = (selector) => new Promise((resolve) => {
       wx.createSelectorQuery()
-        .select('#previewCanvas')
+        .select(selector)
         .boundingClientRect()
-        .exec((result) => {
-          const rect = result && result[0];
-          resolve(rect ? { width: rect.width, height: rect.height } : this.canvasNodeSize);
-        });
+        .exec((result) => resolve(result && result[0] ? result[0] : null));
     });
+    return Promise.all([
+      readRect('#previewCanvas'),
+      readRect('#previewStage'),
+    ]).then(([canvasRect, stageRect]) => ({ canvasRect, stageRect }));
   },
 
   async runDiagnosticSuite(options) {
@@ -954,11 +1016,19 @@ Page({
       this.setData({ diagnosticsRunning: true });
     }
     try {
-      const nodeSize = await this.queryCanvasNodeSize();
+      const geometry = await this.queryPresentationGeometry();
+      const canvasRect = geometry.canvasRect || this.canvasRect || this.canvasNodeSize;
+      const stageRect = geometry.stageRect || this.stageRect || canvasRect;
+      const nodeSize = canvasRect ? {
+        width: canvasRect.width, height: canvasRect.height,
+      } : this.canvasNodeSize;
       const outcome = Diagnostics.runDiagnostics({
         renderer: this.renderer,
         canvas: this.canvas,
         nodeSize,
+        canvasRect,
+        stageRect,
+        thumbnail: this.lastThumbnailGeometry,
         pixelRatio: this.devicePixelRatio,
         photo: this.photoSourceInfo,
         app: {
@@ -1053,8 +1123,12 @@ Page({
     this.comparing = false;
     this.resetThumbnails();
     if (this.renderer) {
+      if (this.canvasNodeSize) {
+        this.renderer.resizeToCssSize(
+          this.canvasNodeSize.width, this.canvasNodeSize.height, this.devicePixelRatio
+        );
+      }
       this.renderer.clearPhoto();
-      this.renderer.resize(1, 1);
     }
     this.transition('clear');
     this.setData({
@@ -1065,27 +1139,30 @@ Page({
       selectedStock: '',
       selectedStockName: '',
       comparing: false,
-      canvasStyle: 'width: 1px; height: 1px;',
+      canvasStyle: 'width: 100%; height: 100%;',
       categories: [],
     });
   },
 
-  fitCanvas(width, height) {
-    return new Promise((resolve) => {
-      wx.createSelectorQuery()
-        .select('#previewStage')
-        .boundingClientRect()
-        .exec((result) => {
-          const rect = result && result[0];
-          if (rect && rect.width && rect.height) {
-            const scale = Math.min(rect.width / width, rect.height / height);
-            this.setData({
-              canvasStyle: `width: ${(width * scale).toFixed(3)}px; height: ${(height * scale).toFixed(3)}px;`,
-            }, resolve);
-          } else {
-            resolve();
-          }
-        });
+  fitCanvas() {
+    return this.queryPresentationGeometry().then((geometry) => {
+      const canvasRect = geometry.canvasRect || this.canvasRect || this.canvasNodeSize;
+      const stageRect = geometry.stageRect || this.stageRect || canvasRect;
+      this.canvasRect = canvasRect || null;
+      this.stageRect = stageRect || null;
+      if (canvasRect && canvasRect.width && canvasRect.height) {
+        this.canvasNodeSize = { width: canvasRect.width, height: canvasRect.height };
+      }
+      if (this.renderer && stageRect && stageRect.width && stageRect.height) {
+        this.lastBufferGeometry = this.renderer.resizeToCssSize(
+          stageRect.width, stageRect.height, this.devicePixelRatio
+        );
+      }
+      return {
+        canvasRect: this.canvasRect,
+        stageRect: this.stageRect,
+        buffer: this.lastBufferGeometry || null,
+      };
     });
   },
 

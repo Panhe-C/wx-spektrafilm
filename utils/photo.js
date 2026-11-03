@@ -191,6 +191,10 @@ function drawOriented(decoded, size) {
     height: size.height,
     sourceWidth: decoded.sourceWidth,
     sourceHeight: decoded.sourceHeight,
+    infoWidth: Number(decoded.info && decoded.info.width),
+    infoHeight: Number(decoded.info && decoded.info.height),
+    decodeCanvasWidth: size.width,
+    decodeCanvasHeight: size.height,
     orientation: decoded.decision.orientation,
     engineApplied: decoded.decision.engineApplied,
     // The renderer invokes this at most once, only when its CPU RGBA decode is

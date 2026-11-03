@@ -46,11 +46,12 @@ scale      = targetLong / S
 ```
 
 Width and height are rounded independently and remain at least one pixel. Small images are not
-upscaled. The oriented image, not the original EXIF orientation, determines the output aspect ratio.
-The CSS canvas is then fitted inside the preview stage with `contain` semantics; the dark stage is
-the letterbox. A 1280×854 photo texture is about 4.17 MiB as RGBA in a typical GPU implementation,
-rather than a multi-megapixel 12 MP texture. Decoding the source JPEG still requires temporary
-source memory.
+upscaled. The oriented image, not the original EXIF orientation, determines the photo texture's aspect
+ratio. The native canvas always fills the preview stage; its drawing buffer is stage CSS size × DPR,
+clamped by `MAX_RENDERBUFFER_SIZE` and `MAX_VIEWPORT_DIMS`. The renderer aspect-fits the photo with a
+centred GL viewport and clears the remaining default framebuffer to #080808. A 1280×854 photo texture
+is about 4.17 MiB as RGBA in a typical GPU implementation, rather than a multi-megapixel 12 MP texture.
+Decoding the source JPEG still requires temporary source memory.
 
 All input and target textures use WebGL1 `UNSIGNED_BYTE`, `LINEAR`
 minification/magnification, `CLAMP_TO_EDGE`, and no mipmaps. Every texture is created by one helper
@@ -81,9 +82,15 @@ parameters, and GL errors are retained for `utils/diagnostics.js`. CPU RGBA is r
 this adds about
 4.17 MiB for a 1280×854 photo, in addition to its GPU texture.
 
-The drawing-buffer policy is explicit: a loaded preview has one buffer pixel per prepared photo
-pixel, with dimensions and viewport set before upload/draw; CSS performs only `contain` fitting. The
-empty preview uses node CSS size × DPR. See `docs/DEVICE_DEBUG.md` for the iPhone investigation.
+The drawing-buffer policy is explicit and independent of photo dimensions: the canvas CSS layout is
+always `width:100%; height:100%` (never an initial 1×1 or a photo-sized CSS box), and the drawing
+buffer follows the stage CSS geometry × DPR. `resizeToCssSize()` records requested/actual/clamped
+sizes. On-screen drawing binds the default framebuffer, disables scissor/blending, enables all colour
+writes, clears with alpha 1, reads actual `gl.drawingBufferWidth/Height`, and uses a centred photo
+sub-viewport. The target passed to the shader still describes the photo rect, so grain, halation and
+vignette are pixel-equivalent to an FBO render of that rect. Page draws run in the canvas node's rAF,
+with an extra frame after initial layout and resize. FBO thumbnail/export targets are unchanged.
+See `docs/DEVICE_DEBUG.md` for both iPhone investigations.
 
 The LUT uniforms are:
 
@@ -203,9 +210,10 @@ vertically in the preview and would have been mirrored inside every tile of an e
 `renderer.renderRegionToPixels({ width, height, target, intensity, adjustments, effects })`
 renders a rectangle of the picture into the offscreen framebuffer and reads it back, exactly like
 `renderToPixels()`. The `target` describes the rectangle in the normalised frame space and the uv
-mappings of the photo and of the halo buffer; `utils/export.js::planExport` builds it. The
-preview path is the special case "the whole picture", so the two share one shader and one
-renderer. `docs/EXPORT.md` describes the tiling, the margins and the verification.
+mappings of the photo and of the halo buffer; `utils/export.js::planExport` builds it. The preview
+still renders the whole photo, but into a centred sub-viewport of the stable stage-sized default
+buffer; its shader target is the same full-picture frame as the FBO path. `docs/EXPORT.md` describes
+the tiling, the margins and the verification.
 
 ## Offscreen rendering and thumbnails
 
@@ -213,9 +221,12 @@ renderer. `docs/EXPORT.md` describes the tiling, the margins and the verificatio
 cached RGBA framebuffer, reads it back with `readPixels`, and returns top-down `RGBA8` pixels
 together with `{ submitMs, renderMs, readPixelsMs, totalMs }`. The preview framebuffer and
 viewport are restored afterwards, and a temporary `adjustments` object lets thumbnails be rendered
-at default settings while the live preview keeps its own state. This is the path the Phase-4b
-preset cards use; `docs/UI.md` describes the full thumbnail pipeline, including the WeChat export
-order and the placeholder fallback.
+at default settings while the live preview keeps its own state. Preset cards use this FBO path with a
+fixed **96×54 (16:9)** target. `utils/thumbnail.js::thumbnailGeometry()` computes a
+centre crop in photo coordinates and matching `imageUvOffset`/`imageUvScale`; `renderToPixels`
+applies those UVs without changing export geometry. The `<image>` uses `aspectFill` and the WXSS box
+uses 56.25% padding, so the card is neither contain-letterboxed nor squeezed. `docs/UI.md` describes
+the WeChat export order and placeholder fallback.
 
 ## Base and extended cubes
 
@@ -238,7 +249,11 @@ The two cubes of a stock are independent uploads:
 context attributes, texture limits, fragment-highp format, extensions, canvas/node/buffer/viewport
 sizes, source/upload state, and per-texture records. Its GL probes are implemented by the shared
 renderer: a code-exact `(255,0,128,255)` shader draw, photo centre + four corners against CPU bytes,
-base-LUT black/white nodes against CPU bytes, and full-shader centre pixels at intensity 1 and 0.
+base-LUT black/white nodes against CPU bytes, full-shader centre pixels at intensity 1 and 0, and a
+**default-framebuffer centre + four inset corners** read immediately after an on-screen draw and
+compared with the same photo rect rendered to the FBO. The report also includes canvas/stage CSS
+rects, requested/actual buffer sizes, last photo viewport, orientation/decode sizes, letterbox colour,
+and thumbnail crop geometry.
 Probe passes restore the previous program, framebuffer, viewport, and texture bindings. The pure text
 formatter is unit-tested in Node, and the numeric GL suite is asserted in SwiftShader.
 
@@ -262,7 +277,10 @@ override those two paths. `npm test` first runs the plain-Node EXIF policy/matri
 diagnostics formatter, then starts Chrome. `test-upload-strategies.mjs` forces both P and D for the
 photo/base/extended LUT, requires full-render agreement within one code, injects zero-filled direct
 uploads and zero `getImageData()` results to verify GPU/CPU failure fallback (including sticky D and
-photo-only `photoAllBlack`), and asserts the diagnostic solid/photo/LUT/full-shader probes. `npm run test:smoke` runs only one browser pair and is not a substitute for `npm test`.
+photo-only `photoAllBlack`), and asserts the diagnostic solid/photo/LUT/full-shader/default probes.
+`test-presentation.mjs` covers portrait 3:4, oriented EXIF-6/8-style 9:16 inputs, DPR 2, a clamped
+buffer, centred default-viewport/FBO equivalence with all effects, exact #080808 letterboxing, and the
+16:9 crop. `npm run test:smoke` runs only one browser pair and is not a substitute for `npm test`.
 `npm run study:ev` re-runs the separate physical faithfulness study against full `simulate()`; it is
 resumable and is not part of `npm test`.
 
@@ -281,8 +299,8 @@ fails unless every pair has mean ΔE2000 < 0.3 and max ΔE2000 < 2.0. It also ch
 extreme EV/WB/post settings applied, and half intensity must match the unrounded-Python-LUT
 midpoint within one code and the same ΔE limits. Adjustment cases compare the shader against
 NumPy implementations of the same math, thumbnails are checked against a pixel-centre bilinear
-sample of the exported input, and the median stock-switch and thumbnail timings must stay below
-300 ms.
+sample of the **same cropped UV rectangle** of the exported input, and the median stock-switch and
+thumbnail timings must stay below 300 ms.
 
 Reported shader time includes draw, `gl.finish()`, and a one-pixel synchronous readback, but excludes
 photo/LUT upload and PNG encoding. This is a repeatable headless comparison timing, not a real-phone
@@ -292,8 +310,8 @@ The final on-box full run passed **66/66 default pairs**, **11/11 intensity chec
 adjustment pairs**, and **11/11 thumbnails**. The worst default mean ΔE2000 was **0.0005203500**
 (`velvia100/p237`) and the worst default maximum was **1.2104642391** (`portra160/p1015`); the worst
 adjustment mean was **0.0004473071** and the worst adjustment maximum **1.2063055038**. Median
-render/readback time was **29.65 ms**, median thumbnail `setLut`+render+readback **2.40 ms**, and
-median full-preview stock switch **32.40 ms**. Intensity 0 was code-exact; intensity 0.5 stayed
+render/readback time was **31.80 ms**, median thumbnail `setLut`+render+readback **2.20 ms**, and
+median full-preview stock switch **29.00 ms**. Intensity 0 was code-exact; intensity 0.5 stayed
 within one code. The separate upload suite passed P/D with **0-code maximum difference over 6,144
 pixels**, recovered both injected zero uploads through P, and measured solid/photo/LUT maxima of
 **0/0/0 codes** (full-shader intensity 0: **1 code**). See `harness/out/report.md` and

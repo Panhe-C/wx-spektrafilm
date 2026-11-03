@@ -121,6 +121,54 @@
     ));
   }
 
+  function computeDrawingBufferSize(cssWidth, cssHeight, pixelRatio, limits) {
+    const width = Number(cssWidth);
+    const height = Number(cssHeight);
+    const ratio = Number(pixelRatio);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0 ||
+      !Number.isFinite(ratio) || ratio <= 0) {
+      throw new Error('Invalid canvas CSS dimensions or pixel ratio');
+    }
+    const constraints = limits || {};
+    const viewport = constraints.maxViewportDims || [Infinity, Infinity];
+    const maxWidth = Math.max(1, Math.floor(Math.min(
+      Number(constraints.maxRenderbufferSize) || Infinity,
+      Number(viewport[0]) || Infinity
+    )));
+    const maxHeight = Math.max(1, Math.floor(Math.min(
+      Number(constraints.maxRenderbufferSize) || Infinity,
+      Number(viewport[1]) || Infinity
+    )));
+    const requestedWidth = Math.max(1, Math.round(width * ratio));
+    const requestedHeight = Math.max(1, Math.round(height * ratio));
+    const scale = Math.min(1, maxWidth / requestedWidth, maxHeight / requestedHeight);
+    return {
+      width: Math.max(1, Math.min(maxWidth, Math.floor(requestedWidth * scale))),
+      height: Math.max(1, Math.min(maxHeight, Math.floor(requestedHeight * scale))),
+      requestedWidth,
+      requestedHeight,
+      maxWidth,
+      maxHeight,
+      clamped: scale < 1,
+    };
+  }
+
+  function computeAspectFitRect(bufferWidth, bufferHeight, photoWidth, photoHeight) {
+    const values = [bufferWidth, bufferHeight, photoWidth, photoHeight].map(Number);
+    if (values.some((value) => !Number.isFinite(value) || value <= 0)) {
+      throw new Error('Invalid aspect-fit geometry');
+    }
+    const scale = Math.min(bufferWidth / photoWidth, bufferHeight / photoHeight);
+    const width = Math.max(1, Math.min(bufferWidth, Math.round(photoWidth * scale)));
+    const height = Math.max(1, Math.min(bufferHeight, Math.round(photoHeight * scale)));
+    return {
+      x: Math.floor((bufferWidth - width) / 2),
+      y: Math.floor((bufferHeight - height) / 2),
+      width,
+      height,
+    };
+  }
+
   function computePreviewSize(width, height, devicePixelRatio, maxTextureSize, longEdge) {
     const targetEdge = longEdge || 1280;
     if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
@@ -201,6 +249,13 @@
       }
       return Date.now();
     });
+    const bufferLimits = {
+      maxRenderbufferSize: options.maxRenderbufferSize || gl.getParameter(gl.MAX_RENDERBUFFER_SIZE),
+      maxViewportDims: options.maxViewportDims || Array.from(gl.getParameter(gl.MAX_VIEWPORT_DIMS)),
+    };
+    let lastPresentation = null;
+    let lastBufferGeometry = null;
+    let lastIntensity = 1;
 
     const program = createProgram(gl, options.vertexSource, options.fragmentSource);
     const haloProgram = options.haloFragmentSource
@@ -845,17 +900,45 @@ void main() {
     }
 
     function resize(width, height) {
-      const targetWidth = Math.max(1, Math.round(Number(width)));
-      const targetHeight = Math.max(1, Math.round(Number(height)));
-      if (!Number.isFinite(targetWidth) || !Number.isFinite(targetHeight)) {
+      const requestedWidth = Math.max(1, Math.round(Number(width)));
+      const requestedHeight = Math.max(1, Math.round(Number(height)));
+      if (!Number.isFinite(requestedWidth) || !Number.isFinite(requestedHeight)) {
         throw new Error('Invalid canvas drawing-buffer dimensions');
       }
-      if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
-        canvas.width = targetWidth;
-        canvas.height = targetHeight;
+      if (canvas.width !== requestedWidth || canvas.height !== requestedHeight) {
+        canvas.width = requestedWidth;
+        canvas.height = requestedHeight;
       }
-      gl.viewport(0, 0, targetWidth, targetHeight);
+      // The host may clamp or otherwise diverge from canvas.width/height.
+      // Always use the actual default drawing buffer for GL state.
+      const actualWidth = gl.drawingBufferWidth;
+      const actualHeight = gl.drawingBufferHeight;
+      gl.disable(gl.SCISSOR_TEST);
+      gl.viewport(0, 0, actualWidth, actualHeight);
       collectGlErrors('resize');
+      return {
+        width: actualWidth,
+        height: actualHeight,
+        requestedWidth,
+        requestedHeight,
+        clamped: actualWidth !== requestedWidth || actualHeight !== requestedHeight,
+      };
+    }
+
+    function resizeToCssSize(cssWidth, cssHeight, pixelRatio, overrides) {
+      const size = computeDrawingBufferSize(
+        cssWidth, cssHeight, pixelRatio, overrides || bufferLimits
+      );
+      const actual = resize(size.width, size.height);
+      lastBufferGeometry = Object.assign({}, size, {
+        cssWidth: Number(cssWidth),
+        cssHeight: Number(cssHeight),
+        pixelRatio: Number(pixelRatio),
+        actualWidth: actual.width,
+        actualHeight: actual.height,
+        hostClamped: actual.clamped,
+      });
+      return lastBufferGeometry;
     }
 
     function setPhoto(source, details, retryDecode) {
@@ -1165,18 +1248,63 @@ void main() {
       gl.uniform2f(uniforms.haloUvScale, target.haloUvScale[0], target.haloUvScale[1]);
       gl.uniform2f(uniforms.haloUvOffset, target.haloUvOffset[0], target.haloUvOffset[1]);
       gl.uniform1f(uniforms.vignetteStrength, vignetteStrength);
-      // The halation chain changed the viewport; the main pass always draws
-      // into the target rectangle.
-      gl.viewport(0, 0, target.width, target.height);
+      // The halation chain changed the viewport. FBO paths use their full
+      // target; the native preview supplies its centred photo sub-viewport.
+      const viewport = target.viewport || {
+        x: 0, y: 0, width: target.width, height: target.height,
+      };
+      gl.disable(gl.SCISSOR_TEST);
+      gl.disable(gl.BLEND);
+      gl.colorMask(true, true, true, true);
+      gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      if (target.onScreen) {
+        lastPresentation = {
+          framebuffer: 'default',
+          bufferWidth: gl.drawingBufferWidth,
+          bufferHeight: gl.drawingBufferHeight,
+          viewport: [viewport.x, viewport.y, viewport.width, viewport.height],
+          photoRect: {
+            x: viewport.x, y: viewport.y, width: viewport.width, height: viewport.height,
+          },
+          intensity,
+        };
+      }
       collectGlErrors('draw:main');
     }
 
     function render(intensity) {
+      lastIntensity = Number.isFinite(Number(intensity)) ? Number(intensity) : 0;
+      const bufferWidth = gl.drawingBufferWidth;
+      const bufferHeight = gl.drawingBufferHeight;
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      gl.viewport(0, 0, canvas.width, canvas.height);
-      draw(intensity, adjustments, effects, defaultTarget(canvas.width, canvas.height));
+      gl.disable(gl.SCISSOR_TEST);
+      gl.disable(gl.BLEND);
+      gl.colorMask(true, true, true, true);
+      gl.viewport(0, 0, bufferWidth, bufferHeight);
+      gl.clearColor(8 / 255, 8 / 255, 8 / 255, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      if (hasPhoto) {
+        const photoRect = computeAspectFitRect(
+          bufferWidth, bufferHeight, photoRecord.width, photoRecord.height
+        );
+        const target = defaultTarget(photoRect.width, photoRect.height);
+        // Frame-relative effects use the photo rect, not the letterboxed stage.
+        target.viewport = photoRect;
+        target.onScreen = true;
+        draw(lastIntensity, adjustments, effects, target);
+      } else {
+        lastPresentation = {
+          framebuffer: 'default',
+          bufferWidth,
+          bufferHeight,
+          viewport: [0, 0, bufferWidth, bufferHeight],
+          photoRect: null,
+          intensity: 0,
+        };
+      }
       collectGlErrors('render');
+      return lastPresentation;
     }
 
     function ensureTarget(width, height) {
@@ -1217,10 +1345,17 @@ void main() {
       if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) {
         throw new Error('Invalid offscreen render dimensions');
       }
+      const target = defaultTarget(width, height);
+      if (settings.imageUvOffset) {
+        target.imageUvOffset = settings.imageUvOffset.slice();
+      }
+      if (settings.imageUvScale) {
+        target.imageUvScale = settings.imageUvScale.slice();
+      }
       return renderTargetToPixels({
         width,
         height,
-        target: defaultTarget(width, height),
+        target,
         intensity: settings.intensity,
         adjustments: settings.adjustments,
         effects: settings.effects,
@@ -1296,7 +1431,7 @@ void main() {
         flipRows(pixels, width, height);
       }
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      gl.viewport(0, 0, canvas.width, canvas.height);
+      gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
       const timing = {
         submitMs: submitted - started,
         renderMs: rendered - started,
@@ -1350,6 +1485,8 @@ void main() {
           fallbacks: uploadFallbacks.map((entry) => Object.assign({}, entry)),
         },
         textures: Object.keys(textureRecords).map((name) => summarizeTexture(textureRecords[name])),
+        presentation: lastPresentation ? JSON.parse(JSON.stringify(lastPresentation)) : null,
+        bufferGeometry: lastBufferGeometry ? Object.assign({}, lastBufferGeometry) : null,
         glErrors: glErrors.map((entry) => Object.assign({}, entry)),
       };
     }
@@ -1451,6 +1588,91 @@ void main() {
         };
       });
 
+      capture('defaultFramebuffer', () => {
+        if (!hasPhoto || !lut) {
+          return { available: false, reason: 'photo-and-lut-required' };
+        }
+        // Draw and read the native default framebuffer before any FBO probe.
+        // readPixels coordinates are bottom-up, so flipY:false below gives the
+        // FBO pixels exactly the same local coordinate convention.
+        const presentation = render(lastIntensity);
+        const rect = presentation.photoRect;
+        const insetX = rect.width > 2 ? 1 : 0;
+        const insetY = rect.height > 2 ? 1 : 0;
+        const localPoints = [
+          { name: 'centre', x: Math.floor(rect.width / 2), y: Math.floor(rect.height / 2) },
+          { name: 'lowerLeftInset', x: insetX, y: insetY },
+          { name: 'lowerRightInset', x: rect.width - 1 - insetX, y: insetY },
+          { name: 'upperLeftInset', x: insetX, y: rect.height - 1 - insetY },
+          {
+            name: 'upperRightInset',
+            x: rect.width - 1 - insetX,
+            y: rect.height - 1 - insetY,
+          },
+        ];
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        const defaults = localPoints.map((point) => {
+          const value = new Uint8Array(4);
+          gl.readPixels(
+            rect.x + point.x, rect.y + point.y, 1, 1,
+            gl.RGBA, gl.UNSIGNED_BYTE, value
+          );
+          return Array.from(value);
+        });
+        collectGlErrors('readPixels:default-framebuffer');
+        const fbo = renderTargetToPixels({
+          width: rect.width,
+          height: rect.height,
+          target: defaultTarget(rect.width, rect.height),
+          intensity: lastIntensity,
+          adjustments,
+          effects,
+          flipY: false,
+          kind: 'diagnostic-default-comparison',
+        });
+        const samples = localPoints.map((point, index) => {
+          const offset = (point.y * rect.width + point.x) * 4;
+          const fboPixel = Array.from(fbo.pixels.subarray(offset, offset + 4));
+          return Object.assign({}, point, {
+            x: rect.x + point.x,
+            y: rect.y + point.y,
+            defaultPixel: defaults[index],
+            fbo: fboPixel,
+            maxDiff: maxPixelDifference(defaults[index], fboPixel),
+          });
+        });
+        let letterbox = null;
+        if (rect.x > 0 || rect.y > 0) {
+          const x = rect.x > 0 ? 0 : rect.x + Math.floor(rect.width / 2);
+          const y = rect.y > 0 ? 0 : rect.y + Math.floor(rect.height / 2);
+          const value = new Uint8Array(4);
+          // The FBO comparison preserves the default framebuffer; read the
+          // stage background before the final on-screen restoration below.
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, value);
+          letterbox = {
+            x,
+            y,
+            expected: [8, 8, 8, 255],
+            defaultPixel: Array.from(value),
+          };
+          letterbox.exact = letterbox.expected.every(
+            (channel, channelIndex) => letterbox.defaultPixel[channelIndex] === channel
+          );
+        }
+        render(lastIntensity);
+        return {
+          available: true,
+          bufferWidth: presentation.bufferWidth,
+          bufferHeight: presentation.bufferHeight,
+          viewport: presentation.viewport,
+          photoRect: rect,
+          samples,
+          maxDiff: samples.reduce((worst, sample) => Math.max(worst, sample.maxDiff), 0),
+          letterbox,
+        };
+      });
+
       capture('fullShader', () => {
         if (!hasPhoto || !lut || !photoRecord.pixels) {
           return { available: false, reason: 'photo-and-lut-required' };
@@ -1497,8 +1719,7 @@ void main() {
       photoRecord.cpuDecodeSuspect = false;
       photoRecord.photoAllBlack = false;
       photoRecord.decodeRetried = false;
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      gl.clear(gl.COLOR_BUFFER_BIT);
+      render(0);
     }
 
     function finish() {
@@ -1532,7 +1753,10 @@ void main() {
       canvas,
       gl,
       maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE),
+      maxRenderbufferSize: bufferLimits.maxRenderbufferSize,
+      maxViewportDims: bufferLimits.maxViewportDims.slice(),
       resize,
+      resizeToCssSize,
       setPhoto,
       setLut,
       setExtendedLut,
@@ -1557,6 +1781,8 @@ void main() {
   return {
     UPLOAD_STRATEGIES,
     computePreviewSize,
+    computeDrawingBufferSize,
+    computeAspectFitRect,
     computeFrameRect,
     createRenderer,
   };

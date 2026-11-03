@@ -17,6 +17,46 @@
     root.SpektrafilmThumbnails = factory();
   }
 }(typeof globalThis !== 'undefined' ? globalThis : this, function thumbnailFactory() {
+  // Preset cards are fixed 16:9 and centre-cropped, never contain-fitted or
+  // squeezed. Keep the renderer, <image mode>, WXSS padding, and diagnostics
+  // tied to this one geometry policy.
+  const THUMBNAIL_ASPECT = 16 / 9;
+  const THUMBNAIL_WIDTH = 96;
+  const THUMBNAIL_HEIGHT = 54;
+
+  function thumbnailGeometry(photoWidth, photoHeight) {
+    const width = Number(photoWidth);
+    const height = Number(photoHeight);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+      throw new Error('Invalid photo dimensions');
+    }
+    const sourceAspect = width / height;
+    let cropWidth;
+    let cropHeight;
+    let x;
+    let y;
+    if (sourceAspect > THUMBNAIL_ASPECT) {
+      cropHeight = height;
+      cropWidth = height * THUMBNAIL_ASPECT;
+      x = (width - cropWidth) / 2;
+      y = 0;
+    } else {
+      cropWidth = width;
+      cropHeight = width / THUMBNAIL_ASPECT;
+      x = 0;
+      y = (height - cropHeight) / 2;
+    }
+    return {
+      width: THUMBNAIL_WIDTH,
+      height: THUMBNAIL_HEIGHT,
+      boxAspect: THUMBNAIL_ASPECT,
+      imageMode: 'aspectFill',
+      cropRect: { x, y, width: cropWidth, height: cropHeight },
+      imageUvOffset: [x / width, y / height],
+      imageUvScale: [cropWidth / width, cropHeight / height],
+    };
+  }
+
   const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
   const CRC_TABLE = (function buildCrcTable() {
@@ -273,6 +313,10 @@
   }
 
   return {
+    THUMBNAIL_ASPECT,
+    THUMBNAIL_WIDTH,
+    THUMBNAIL_HEIGHT,
+    thumbnailGeometry,
     toBase64,
     encodePng,
     createCanvas,

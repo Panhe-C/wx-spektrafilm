@@ -62,6 +62,9 @@ function createInstance() {
     }
   };
   instance.onLoad.call(instance);
+  // Page logic tests can stay synchronous while production uses the native
+  // node's real asynchronous rAF for compositing.
+  instance.canvas = { requestAnimationFrame: (callback) => callback() };
   instance.renderer = {
     setAdjustments(state) {
       instance.renderer.adjustments = state;
@@ -91,6 +94,9 @@ function createInstance() {
     },
     clearPhoto() {},
     resize() {},
+    resizeToCssSize(width, height) {
+      return { width, height, cssWidth: width, cssHeight: height };
+    },
   };
   return instance;
 }

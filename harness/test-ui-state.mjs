@@ -129,16 +129,29 @@ assert.notEqual(ui.placeholderColor('portra400'), ui.placeholderColor('portra160
 
 // --- thumbnail geometry and ordering ---------------------------------------
 
-const landscape = ui.thumbnailSize(1280, 854);
+const landscape = thumbnail.thumbnailGeometry(1280, 854);
 assert.equal(landscape.width, 96);
-assert.equal(landscape.height, 64);
-const portrait = ui.thumbnailSize(800, 1200);
-assert.equal(portrait.height, 96);
-assert.equal(portrait.width, 64);
-const tiny = ui.thumbnailSize(1, 1);
-assert.equal(tiny.width, 1);
-assert.equal(tiny.height, 1);
-assert.throws(() => ui.thumbnailSize(0, 100), /Invalid photo dimensions/);
+assert.equal(landscape.height, 54);
+assert.equal(landscape.boxAspect, 16 / 9);
+assert.equal(landscape.imageMode, 'aspectFill');
+assert.deepEqual(landscape.imageUvOffset, [0, 67 / 854]);
+assert.deepEqual(landscape.imageUvScale, [1, 720 / 854]);
+assert.deepEqual(landscape.cropRect, { x: 0, y: 67, width: 1280, height: 720 });
+const portrait = thumbnail.thumbnailGeometry(800, 1200);
+assert.equal(portrait.width, 96);
+assert.equal(portrait.height, 54);
+assert.deepEqual(portrait.cropRect, { x: 0, y: 375, width: 800, height: 450 });
+assert.deepEqual(portrait.imageUvOffset, [0, 375 / 1200]);
+assert.deepEqual(portrait.imageUvScale, [1, 450 / 1200]);
+const wide = thumbnail.thumbnailGeometry(2000, 500);
+assert.ok(Math.abs(wide.cropRect.x - (2000 - 500 * 16 / 9) / 2) < 1e-9);
+assert.ok(Math.abs(wide.cropRect.width - 500 * 16 / 9) < 1e-9);
+assert.equal(wide.cropRect.y, 0);
+assert.equal(wide.cropRect.height, 500);
+const tiny = thumbnail.thumbnailGeometry(1, 1);
+assert.equal(tiny.width, 96);
+assert.equal(tiny.height, 54);
+assert.throws(() => thumbnail.thumbnailGeometry(0, 100), /Invalid photo dimensions/);
 
 const ids = manifest.map((stock) => stock.id);
 const order = ui.thumbnailOrder(ids, 'ektar100', ['kodachrome64', 'ektar100']);

@@ -25,6 +25,10 @@ const report = {
   canvas: {
     nodeWidth: 375.5,
     nodeHeight: 200,
+    canvasRect: { x: 0, y: 80, width: 375.5, height: 200 },
+    stageRect: { x: 0, y: 80, width: 375.5, height: 200 },
+    bufferGeometry: { requestedWidth: 1127, requestedHeight: 600, clamped: false },
+    presentation: { viewport: [170, 0, 300, 400], photoRect: { x: 170, y: 0, width: 300, height: 400 } },
     drawingBufferWidth: 1280,
     drawingBufferHeight: 854,
     width: 1280,
@@ -34,6 +38,7 @@ const report = {
     sizingRule: 'photo pixels; CSS contain',
   },
   photo: { type: 'offscreen-2d-canvas', width: 1280, height: 854 },
+  thumbnail: { width: 96, height: 54, boxAspect: 16 / 9, cropRect: { x: 0, y: 67, width: 1280, height: 720 } },
   upload: {
     preferredStrategy: 'direct',
     activeStrategy: 'direct',
@@ -52,6 +57,13 @@ const report = {
   }],
   tests: {
     solidColour: { expected: [255, 0, 128, 255], pixel: [255, 0, 128, 255], exact: true },
+    defaultFramebuffer: {
+      available: true, bufferWidth: 640, bufferHeight: 400,
+      viewport: [170, 0, 300, 400], photoRect: { x: 170, y: 0, width: 300, height: 400 },
+      maxDiff: 1,
+      samples: [{ name: 'centre', x: 320, y: 200, defaultPixel: [1, 2, 3, 255], fbo: [1, 2, 4, 255], maxDiff: 1 }],
+      letterbox: { x: 0, y: 200, defaultPixel: [8, 8, 8, 255], expected: [8, 8, 8, 255], exact: true },
+    },
     photoTexture: {
       available: true, maxDiff: 1,
       samples: [{ name: 'centre', x: 640, y: 427, cpu: [10, 20, 30, 255], gpu: [10, 20, 31, 255], maxDiff: 1 }],
@@ -80,6 +92,11 @@ assert.ok(text.includes('offscreen-2d-canvas'));
 assert.ok(text.includes('cpuDecodeSuspect=true photoAllBlack=true retry=true'));
 assert.ok(text.includes('photo self-check: cpuMean=100.25 gpuMean=0.00 centreMaxDiff=120'));
 assert.ok(text.includes('centre (640,427) cpu=[10,20,30,255] gpu=[10,20,31,255] maxDiff=1'));
+assert.ok(text.includes('[DEFAULT FRAMEBUFFER versus FBO]'));
+assert.ok(text.includes('default=[1,2,3,255] fbo=[1,2,4,255] maxDiff=1'));
+assert.ok(text.includes('letterbox (0,200)'));
+assert.ok(text.includes('[THUMBNAIL GEOMETRY]'));
+assert.ok(text.includes('canvasRect: {"x":0,"y":80,"width":375.5,"height":200}'));
 assert.ok(text.includes('LUT TEXTURE: black + white corners'));
 assert.ok(text.includes('intensity=1: [100,110,120,255]'));
 assert.ok(text.includes('INVALID_OPERATION (1282)'));

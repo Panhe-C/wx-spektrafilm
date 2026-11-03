@@ -58,7 +58,7 @@
                   wx:if="{{stock.thumb.status === 'ready'}}"
                   class="stock-thumb"
                   src="{{stock.thumb.src}}"
-                  mode="aspectFit"
+                  mode="aspectFill"
                 ></image>
                 <view
                   wx:else

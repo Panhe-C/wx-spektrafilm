@@ -101,10 +101,9 @@ accepting either strategy:
   Premultiply is now explicitly false; colour-space conversion is only set for direct sources because
   P bytes are already defined RGBA values. Errors from unsupported calls are captured rather than
   hidden.
-- **Page rule:** after a pick, drawing-buffer width/height are exactly the oriented, bounded photo
-  dimensions. The page calls `resize()` (which sets both dimensions and `gl.viewport`) **before**
-  `setPhoto()` and the first draw. CSS only fits that buffer inside the stage. The empty state uses the
-  canvas node's CSS size × device pixel ratio. `fitCanvas()` now waits for its `setData` callback.
+- **Original page rule:** after a pick, the drawing buffer was changed to the oriented photo size. The
+  presentation follow-up below replaces that with a stable stage-sized surface and GL letterbox.
+  Pixel-store errors are captured rather than hidden.
 - `alpha:false` and `preserveDrawingBuffer:true` are retained and included in the report. Because the
   offscreen framebuffer used for thumbnails was also black, canvas compositing alone cannot explain
   the original report. The solid-colour and full-shader probes separate FBO/readback failure from main
@@ -130,6 +129,65 @@ accepting either strategy:
 - A host decode problem remains distinguishable on device: CPU probe values are printed next to GPU
   values. No colour-managed or premultiplied source bytes are silently treated as known-good.
 
+## Native-canvas presentation follow-up (after 77a70da)
+
+The later iPhone report is materially different: **thumbnails contain the correct real photo**, while
+only the on-screen `<canvas type="webgl">` is black. Because thumbnails execute the same texture
+uploads and full shader into an FBO, then successfully `readPixels` and encode PNG, texture upload,
+LUT sampling, and the general GL pipeline are ruled out as the remaining cause. The evidence isolates
+the native default-framebuffer presentation path.
+
+### Presentation H1 — unstable native surface: concrete source defect, fixed
+
+The canvas began with `canvasStyle: width:1px; height:1px`, later received photo-dependent CSS, and
+`renderer.resize(photoWidth, photoHeight)` also replaced its drawing buffer. A same-layer native iOS
+canvas can retain its original surface or clamp a reset buffer; the headless browser does not emulate
+that behaviour. The page now creates the canvas at `100% × 100%` of a stage whose height does not
+change on the first pick. `resizeToCssSize()` derives the buffer solely from stage CSS size × DPR and
+clamps by renderbuffer/viewport limits. The photo is drawn into a centred aspect-fit **sub-viewport**;
+the rest is cleared to #080808. Photo dimensions never resize the native canvas.
+
+### Presentation H2 — compositing timing: fixed with node rAF
+
+All page-driven on-screen draws are coalesced into `canvas.requestAnimationFrame` (timeout fallback),
+with one additional frame after initial photo layout and after stage resize/orientation changes.
+Stock changes, extended-LUT restoration, and touch-compare use the same scheduler. Diagnostics may
+intentionally force a synchronous draw so that it can read the default framebuffer immediately.
+
+### Presentation H3 — default-framebuffer state: hardened and observable
+
+The on-screen path explicitly binds framebuffer `null`, disables scissor and blending, enables all
+colour-mask channels, clears with alpha 1, and uses actual `gl.drawingBufferWidth/Height` rather than
+assuming `canvas.width/height`. The last buffer geometry, viewport, and photo rect are recorded. The
+frame-relative shader target is built from the **photo rect**, so grain/halation/vignette match the
+same-sized FBO render; export/tile geometry is untouched.
+
+### Presentation H4 — orientation and aspect: no texture-size mismatch found
+
+`preparePhoto()` supplies one oriented decode canvas, and the texture record uses that canvas's actual
+dimensions. The report now prints `wx.getImageInfo` width/height, decoded Image width/height, decode
+canvas width/height, EXIF orientation, and engine-applied status. Node tests cover the EXIF 6/8
+transforms; browser presentation cases feed equivalent oriented 9:16 pixels through DPR-mismatched
+and clamped buffers.
+
+### Decisive default-framebuffer probe
+
+The diagnostic suite renders on screen, then immediately reads the default framebuffer at the photo
+centre and four inset corners. It renders the identical rect/state to the FBO and compares each pixel,
+with a separate #080808 letterbox sample. **Default black + FBO correct** proves a native default-buffer
+presentation/readback problem; **both wrong** points back to GL state/shader geometry; **both equal
+while the screen is black** isolates compositing after readable GL output. Existing upload/LUT/solid
+probes remain in the report.
+
+### Thumbnail aspect follow-up
+
+The narrow portrait strip was the expected result of rendering the full portrait aspect into a wide
+card with `aspectFit`, not texture squeezing. The UI policy was still wrong for a preset card. Cards
+now share a fixed **16:9** centre crop: 96×54 FBO output and UV crop from
+`utils/thumbnail.js::thumbnailGeometry()`, `<image mode="aspectFill">`, and a CSS `padding-bottom:
+56.25%` box. No `scaleToFill` or `aspectFit` path remains. The NumPy thumbnail reference samples the
+same UV crop under the existing ΔE limits.
+
 ## How to read the next on-device report
 
 Open **关于 → 诊断**, or long-press **SPEKTRAFILM**, then use **复制**. **重新运行** repeats the suite.
@@ -143,7 +201,9 @@ text is also logged with `[wx-spektrafilm][diag]`.
 | Photo probes pass, LUT white probe fails while CPU is non-black | LUT decode/upload failure; check the b=N−1 coordinate and alpha |
 | Photo and LUT probes pass, full intensity 0 fails | Quad/UV/main-program/uniform path, not source upload alone |
 | Intensity 0 passes but intensity 1 is black/wrong | LUT selection/lookup/uniform path; compare base/extended status |
-| All FBO probes pass but only the visible canvas is black | Canvas drawing-buffer/viewport or iOS compositing; use the reported sizes/attributes |
+| All FBO probes pass but only the visible canvas is black | Use the new default-versus-FBO samples to separate GL output from native compositing |
+| Default-framebuffer samples are black but matching FBO samples are correct | Native default-buffer presentation/readback failure, not texture upload or LUT math |
+| Default and FBO samples agree but the visible canvas is black | Post-readback native compositing/surface failure; use node/CSS/buffer/viewport records |
 | `direct` fails and `pixels` passes | Confirms H1 on that host; the app should nevertheless have recovered automatically |
 | Any nonzero GL error | Its stage and texture name identify the failing operation |
 

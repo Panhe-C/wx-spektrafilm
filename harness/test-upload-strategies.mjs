@@ -116,6 +116,9 @@ async function main() {
     assert.ok(report.tests.fullShader.intensity0MaxDiff <= 1,
       `full shader intensity=0 differs by ${report.tests.fullShader.intensity0MaxDiff}`);
     assert.equal(report.tests.fullShader.intensity1.length, 4);
+    assert.equal(report.tests.defaultFramebuffer.available, true);
+    assert.equal(report.tests.defaultFramebuffer.samples.length, 5);
+    assert.ok(report.tests.defaultFramebuffer.maxDiff <= 1);
     assert.equal(report.summary.ok, true, JSON.stringify(report.summary));
     assert.ok(report.gl.maxTextureSize > 0);
     assert.ok(report.gl.maxTextureImageUnits >= 4);

@@ -25,7 +25,9 @@ The code in this repository is licensed under GPLv3 (see LICENSE).
 The index page supports album/camera selection, EXIF-upright bounded resizing, a contain/letterbox
 WebGL preview, all 11 stocks, intensity 0–100%, press-and-hold original comparison, and clear.
 Photo and LUT sources prefer validated RGBA-byte uploads, with an automatic direct-source fallback;
-this avoids the silent black offscreen-canvas upload seen in the iPhone report.
+this avoids the silent black offscreen-canvas upload seen in the iPhone report. The native preview
+canvas always fills a stable stage, uses a stage-CSS×DPR drawing buffer, renders the photo through a
+centred aspect-fit GL viewport, and schedules presentation in the canvas node's rAF.
 The LUT PNGs and manifests ship in the **main package** under `subpackages/luts/` (the directory name is
 kept only for path stability). After the first pick, `ensureLuts()` loads the local CommonJS manifest
 synchronously; there is no `wx.loadSubpackage` step or LUT-package network dependency. Decoded LUTs
@@ -35,8 +37,8 @@ are cached in memory. See `docs/RENDERER.md` and `docs/ORIENTATION.md` for imple
 ## Presets and adjustments
 
 - **Preset picker** grouped into 彩色负片 / 反转片（幻灯片）/ 电影胶片. Every card shows the
-  stock name, its ISO speed, one Chinese line about the stock, and a thumbnail rendered from the
-  current photo at a 96 px long edge.
+  stock name, its ISO speed, one Chinese line about the stock, and a fixed **16:9 centre-cropped**
+  thumbnail (96×54 FBO render, `<image mode="aspectFill">`, no letterbox bars or squeezing).
 - **Thumbnails** are generated lazily — the selected stock first, then the cards that scroll into
   view, then the rest — cached per photo and stock, invalidated on a new photo, and never
   regenerated while a slider moves. If every export route fails, the card shows a coloured
@@ -136,8 +138,10 @@ page-wiring and pure diagnostics-formatter tests before launching Chrome. The br
 forces both RGBA-byte (P) and direct-source (D) paths, compares full output within one code, injects
 GPU-zero and zero-`getImageData()` photo/LUT cases to verify suspect-decode fallback and the
 photo-only all-black outcome, and asserts the same solid/photo/LUT/full-shader probes exposed on
-device. It writes `harness/out/diagnostics/report.{json,txt}`. The main harness
-writes `harness/out/report.{json,md}`, per-pair shader/Python/diff PNGs, per-adjustment
+device. The presentation suite checks portrait/EXIF-oriented inputs, DPR-2 and clamped buffers,
+default-framebuffer-versus-FBO samples with all effects, exact letterbox colour, and fixed-aspect
+thumbnail crops. Reports go to `harness/out/diagnostics/report.{json,txt}` and
+`harness/out/presentation/report.json`. The main harness writes `harness/out/report.{json,md}`, per-pair shader/Python/diff PNGs, per-adjustment
 PNGs, thumbnails, `harness/out/contact-{shader,adjust,thumbs}.jpg`, and — from the spatial-effect
 suite — `harness/out/contact-effects.jpg`, `harness/out/grain-compare.jpg` and
 `harness/out/effects-report.{json,md}`, and — from the export suite —
@@ -148,10 +152,12 @@ headless checks do not replace WeChat DevTools or physical-device testing.
 The final on-box full run passed **66/66 default pairs**, **11/11 intensity checks**, **61/61
 adjustment pairs**, and **11/11 thumbnails**. Worst default mean ΔE2000 was **0.00052035**, worst
 default maximum **1.21046424**, worst adjustment mean **0.00044731**, and worst adjustment maximum
-**1.20630550**. Median render/readback was **29.65 ms**, median thumbnail setLut+render+readback
-**2.40 ms**, and median full-preview stock switch **32.40 ms**. The upload/diagnostic suite also
+**1.20630550**. Median render/readback was **31.80 ms**, median thumbnail setLut+render+readback
+**2.20 ms**, and median full-preview stock switch **29.00 ms**. The upload/diagnostic suite also
 passed: P versus D differed by **0 codes over 6,144 pixels**, injected zero photo/LUT uploads fell
-back to P, solid colour was exact, and photo/LUT probes were **0-code** maxima. The generated `harness/out/report.md`
+back to P, solid colour was exact, and photo/LUT probes were **0-code** maxima. All three
+portrait/DPR/clamped presentation cases had **0-code default-versus-FBO maxima** and exact #080808
+letterboxes. The generated `harness/out/report.md`
 contains the per-stock and per-photo tables. These are headless measurements, not phone timings.
 
 The effect suite (identity at strength 0, determinism, scale invariance, the NumPy mirror, the
@@ -187,8 +193,8 @@ unimplemented. `docs/LIMITATIONS.md` details this boundary and the exposure/tona
 The tiled-grid PNG layout and shader half-texel/trilinear contract are in `docs/LUT_FORMAT.md`.
 The shipped assets use **N=33** for the native look plus an **N=49** two-stop extended-range cube
 per stock, in **1,069,130 bytes (1044.1 KiB)** for the complete LUT folder including both generated
-manifests (asset budget 1,200,000 bytes). These assets are included in the **1,284,634-byte
-(1254.5 KiB) main package**, below the 2 MiB limit. Exact pixel-pooled
+manifests (asset budget 1,200,000 bytes). These assets are included in the **1,300,200-byte
+(1269.7 KiB) main package**, below the 2 MiB limit. Exact pixel-pooled
 natural-image error versus full `simulate()` is **0.2829 mean / 0.6140 p95 / 0.8296 p99 /
 1.6896 maximum dE2000**; every stock passes the mean<1.0 and p95<3.0 criteria. The camera-side
 EV and white-balance paths measure **0.1479–0.1882 mean / 0.3219–0.3966 p95 dE2000** over the

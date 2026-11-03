@@ -45,8 +45,8 @@
   // utils/adjust.js (contrastMultiplier), this is the range for the UI.
   const CONTRAST_MULTIPLIER_RANGE = Object.freeze([0.7, 1.4]);
 
-  // Long edge of a generated preset thumbnail, in CSS pixels.
-  const THUMBNAIL_LONG_EDGE = 96;
+  // Fixed-aspect thumbnail crop geometry lives in utils/thumbnail.js so the
+  // renderer, image mode, WXSS and diagnostics share one policy.
 
   const CATEGORY_TITLES = Object.freeze({
     'colour negative': '彩色负片',
@@ -238,24 +238,6 @@
     return order;
   }
 
-  function thumbnailSize(width, height, longEdge) {
-    const sourceWidth = Math.round(Number(width));
-    const sourceHeight = Math.round(Number(height));
-    if (!Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight) ||
-      sourceWidth <= 0 || sourceHeight <= 0) {
-      throw new Error('Invalid photo dimensions');
-    }
-    const edge = Math.min(
-      Number(longEdge) > 0 ? Number(longEdge) : THUMBNAIL_LONG_EDGE,
-      Math.max(sourceWidth, sourceHeight)
-    );
-    const scale = edge / Math.max(sourceWidth, sourceHeight);
-    return {
-      width: Math.max(1, Math.round(sourceWidth * scale)),
-      height: Math.max(1, Math.round(sourceHeight * scale)),
-    };
-  }
-
   // setData throttle policy for the numeric readouts.
   function shouldEmit(now, lastEmit, interval) {
     if (!Number.isFinite(now) || !Number.isFinite(lastEmit)) {
@@ -291,7 +273,6 @@
     ADJUSTMENT_KEYS,
     CONTRAST_MULTIPLIER_RANGE,
     READOUT_INTERVAL_MS,
-    THUMBNAIL_LONG_EDGE,
     CATEGORY_TITLES,
     CATEGORY_ORDER,
     STOCK_DESCRIPTIONS,
@@ -309,7 +290,6 @@
     placeholderColor,
     groupStocks,
     thumbnailOrder,
-    thumbnailSize,
     shouldEmit,
     nextPhase,
     phaseText,

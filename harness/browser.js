@@ -244,14 +244,18 @@
 
   async function thumbnail(id) {
     await cacheStock(id);
-    const size = SpektrafilmUiState.thumbnailSize(inputCanvas.width, inputCanvas.height);
+    const geometry = SpektrafilmThumbnails.thumbnailGeometry(
+      inputCanvas.width, inputCanvas.height
+    );
     // Deliberately nonidentity live state proves the explicit thumbnail override.
     renderer.setAdjustments({ ev: 1, temperature: 50, contrast: 0.5, saturation: 1.5 });
     const started = performance.now();
     selectCachedStock(id, false);
     const result = renderer.renderToPixels({
-      width: size.width,
-      height: size.height,
+      width: geometry.width,
+      height: geometry.height,
+      imageUvOffset: geometry.imageUvOffset,
+      imageUvScale: geometry.imageUvScale,
       intensity: 1,
       adjustments: DEFAULTS,
       // The preset thumbnails never include the spatial effects.
@@ -260,14 +264,21 @@
     const switchMs = performance.now() - started;
     const restored = renderer.gl.getParameter(renderer.gl.FRAMEBUFFER_BINDING) === null;
     const output = document.createElement('canvas');
-    output.width = size.width;
-    output.height = size.height;
+    output.width = geometry.width;
+    output.height = geometry.height;
     const context = output.getContext('2d', { alpha: false });
-    context.putImageData(new ImageData(new Uint8ClampedArray(result.pixels), size.width, size.height), 0, 0);
+    context.putImageData(new ImageData(
+      new Uint8ClampedArray(result.pixels), geometry.width, geometry.height
+    ), 0, 0);
     return {
       stock: id,
-      width: size.width,
-      height: size.height,
+      width: geometry.width,
+      height: geometry.height,
+      cropRect: geometry.cropRect,
+      boxAspect: geometry.boxAspect,
+      imageMode: geometry.imageMode,
+      imageUvOffset: geometry.imageUvOffset,
+      imageUvScale: geometry.imageUvScale,
       switchMs,
       timing: result.timing,
       restored,
@@ -510,6 +521,84 @@
     };
   }
 
+  async function verifyPresentationGeometry() {
+    const baseData = inputCanvas.toDataURL('image/png');
+    const stock = stockById('portra400');
+    const images = await ensureExtended(stock.id);
+
+    async function rotateSource(clockwise) {
+      const bitmap = await createImageBitmap(await (await fetch(baseData)).blob());
+      const output = document.createElement('canvas');
+      output.width = bitmap.height;
+      output.height = bitmap.width;
+      const context = output.getContext('2d', { alpha: false });
+      if (clockwise) {
+        context.translate(output.width, 0);
+        context.rotate(Math.PI / 2);
+      } else {
+        context.translate(0, output.height);
+        context.rotate(-Math.PI / 2);
+      }
+      context.drawImage(bitmap, 0, 0);
+      bitmap.close();
+      return output.toDataURL('image/png');
+    }
+
+    const cases = [
+      {
+        name: 'portrait-3x4-dpr2', width: 480, height: 640,
+        cssWidth: 320, cssHeight: 200, pixelRatio: 2, data: baseData,
+      },
+      {
+        name: 'portrait-9x16-exif6-oriented', width: 360, height: 640,
+        cssWidth: 360, cssHeight: 200, pixelRatio: 2, data: await rotateSource(true),
+        exifOrientation: 6,
+      },
+      {
+        name: 'portrait-9x16-exif8-clamped', width: 360, height: 640,
+        cssWidth: 360, cssHeight: 200, pixelRatio: 2, data: await rotateSource(false),
+        exifOrientation: 8,
+        limits: { maxRenderbufferSize: 320, maxViewportDims: [320, 240] },
+      },
+    ];
+    const results = [];
+    for (const item of cases) {
+      await setPhotoData(item.data, item.width, item.height);
+      renderer.setLut(images.base, stock, images.extended);
+      renderer.setAdjustments(DEFAULTS);
+      renderer.setEffects({ grain: 1, halation: 1, vignette: 0.5 });
+      canvas.style.width = `${item.cssWidth}px`;
+      canvas.style.height = `${item.cssHeight}px`;
+      const cssRect = canvas.getBoundingClientRect();
+      const buffer = renderer.resizeToCssSize(
+        item.cssWidth, item.cssHeight, item.pixelRatio, item.limits
+      );
+      renderer.render(1);
+      const presentation = renderer.runDiagnostics().defaultFramebuffer;
+      const thumbnailGeometry = SpektrafilmThumbnails.thumbnailGeometry(
+        item.width, item.height
+      );
+      results.push({
+        name: item.name,
+        exifOrientation: item.exifOrientation || 1,
+        photo: { width: item.width, height: item.height },
+        css: {
+          width: item.cssWidth,
+          height: item.cssHeight,
+          pixelRatio: item.pixelRatio,
+          canvasStyleWidth: canvas.style.width,
+          canvasStyleHeight: canvas.style.height,
+          actualWidth: cssRect.width,
+          actualHeight: cssRect.height,
+        },
+        buffer,
+        presentation,
+        thumbnail: thumbnailGeometry,
+      });
+    }
+    return { cases: results };
+  }
+
   async function verifyUploadStrategiesAndDiagnostics() {
     const stock = stockById('portra400');
     const images = await ensureExtended(stock.id);
@@ -750,6 +839,7 @@
     thumbnail,
     timeStockSwitch,
     verifyLutContract,
+    verifyPresentationGeometry,
     verifyUploadStrategiesAndDiagnostics,
   };
 }());

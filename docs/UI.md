@@ -32,10 +32,11 @@ Design rules that the stylesheet keeps:
 - one spacing scale (8 rpx steps), one accent colour (`#d6b98a`), one card radius (14 rpx);
 - every interactive row is at least 72 rpx tall, the action buttons are 84 rpx (`line-height`);
 - the action bar and the about row use `env(safe-area-inset-bottom)` padding;
-- the preview stage has a fixed height (`42vh`, `min-height: 400rpx`), so the layout never jumps
-  when a photo is loaded or cleared;
-- the thumbnail box has a fixed height (`168rpx`) and the placeholder occupies exactly the same
-  box as the finished image, so a thumbnail appearing causes no reflow;
+- the preview canvas always fills the stage (`100% × 100%`), including the empty state; the stage has
+  a fixed height (`42vh`, `min-height: 400rpx`), so the first photo does not re-layout the native
+  surface or jump the page;
+- the thumbnail box has a fixed **16:9** ratio (`padding-bottom:56.25%`) and the placeholder occupies
+  exactly the same box as the finished image, so a thumbnail appearing causes no reflow;
 - the slider readouts sit in fixed-width columns, so a changing number never moves the layout;
 - loading and disabled states are explicit: the pick buttons are disabled while busy, the reset
   button is disabled while every adjustment is at its default, and the preview shows a spinner
@@ -120,8 +121,10 @@ share does not carry any user data.
 **重新运行** executes the shared GL suite; **复制** sends the monospaced report to
 `wx.setClipboardData`, and **关闭** dismisses it. The report contains GL capabilities, canvas and
 source sizes, P/D upload attempts and fallbacks, per-texture completeness parameters/status/GL
-errors, a solid-colour FBO test, CPU-versus-GPU photo/LUT probes, and full-shader intensity 1/0
-centre pixels. It contains only tiny probe values, not the photo itself.
+errors, a solid-colour FBO test, CPU-versus-GPU photo/LUT probes, full-shader intensity 1/0
+centre pixels, canvas/stage CSS rects, actual/clamped buffer geometry, the last on-screen photo
+viewport, and default-framebuffer centre + four inset corners compared with an identical FBO render.
+Orientation/decode dimensions and thumbnail crop geometry are included. It contains only tiny probe values, not the photo itself.
 
 The latest report is cached in memory by `utils/diagnostics.js` and logged with
 `[wx-spektrafilm][diag]`. When another page operation raises the error banner, the page generates a
@@ -165,6 +168,7 @@ when a new photo is chosen.
 
 ```text
 photo texture (already on the GPU)
+  → thumbnailGeometry(photo) = fixed 16:9 output + centre-crop UV rect
   → renderer.setLut(base cube of the stock)      (base only; no extended cube is needed)
   → renderer.renderToPixels({ width, height, intensity: 1, adjustments: DEFAULTS })
         └─ offscreen RGBA framebuffer, readPixels, top-down rows
@@ -176,8 +180,10 @@ photo texture (already on the GPU)
   → setData on that single card
 ```
 
-- **Size**: `ui.thumbnailSize()` keeps the photo aspect ratio and uses a 96 px long edge (never
-  upscaling a smaller photo).
+- **Geometry**: `utils/thumbnail.js::thumbnailGeometry()` returns a fixed **96×54** target and a
+  centre-crop rect/UV mapping for the current photo. The FBO samples only that crop; `<image
+  mode="aspectFill">` and the 16:9 WXSS box match it. There is no `aspectFit` letterbox and no
+  `scaleToFill` squeeze, including for portrait photos.
 - **Export order**: `wx.canvasToTempFilePath` is tried first because a file path keeps `setData`
   tiny; the data-URL route is the fallback for hosts without it; the built-in PNG encoder (an
   8-bit RGBA PNG with stored deflate blocks, verified by the Node unit test) is the last file-based
@@ -241,7 +247,9 @@ handler exists on the page), the **pure diagnostics formatter**
 (`harness/test-diagnostics.mjs`), and then the headless Chrome/SwiftShader comparison against the NumPy
 references, including the thumbnail path and the stock-switch timing. The upload/diagnostics browser
 suite (`harness/test-upload-strategies.mjs`) proves P/D equivalence within one code,
-zero-filled-source fallback, and exact/bounded GL probes. It is followed by the
+zero-filled-source fallback, and exact/bounded GL probes. `harness/test-presentation.mjs` adds
+portrait, EXIF-6/8-oriented, DPR-2 and clamped-buffer default-versus-FBO checks plus crop geometry.
+It is followed by the
 **spatial-effect suite** (`harness/test-effects.mjs`): determinism, the identity of the
 strength-0 path against `tools/lut_apply.py`, the scale invariance of the grain statistics, the
 agreement with the NumPy mirror of the grain maths, the halation radial profile against the
@@ -270,9 +278,10 @@ debug session). None of them is covered by the headless harness.
    `docs/ORIENTATION.md` for the auto/manual decision.
 3. **Preset cards** — all three category headers appear, all 11 cards are listed, and the
    selected card is highlighted.
-4. **Thumbnails** — every card shows a thumbnail of the current photo in that stock's look;
-   scrolling reveals the remaining thumbnails; the first card is ready almost immediately and the
-   rest arrive within a second or two.
+4. **Thumbnails** — every card shows a fixed 16:9 centre crop of the current photo in that stock's
+   look, with no black side/top bars and no aspect-ratio squeeze (including portrait and rotated
+   photos); scrolling reveals the remaining thumbnails; the first card is ready almost immediately
+   and the rest arrive within a second or two.
 5. **Thumbnail fallback** — on a device where `wx.canvasToTempFilePath` rejects the offscreen
    canvas, the data-URL or PNG-file fallback must still produce a visible thumbnail; if all three
    fail, the coloured placeholder must appear instead of a broken image.
