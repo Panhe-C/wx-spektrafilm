@@ -130,16 +130,16 @@ assert.notEqual(ui.placeholderColor('portra400'), ui.placeholderColor('portra160
 // --- thumbnail geometry and ordering ---------------------------------------
 
 const landscape = thumbnail.thumbnailGeometry(1280, 854);
-assert.equal(landscape.width, 96);
-assert.equal(landscape.height, 54);
+assert.equal(landscape.width, 240);
+assert.equal(landscape.height, 135);
 assert.equal(landscape.boxAspect, 16 / 9);
 assert.equal(landscape.imageMode, 'aspectFill');
 assert.deepEqual(landscape.imageUvOffset, [0, 67 / 854]);
 assert.deepEqual(landscape.imageUvScale, [1, 720 / 854]);
 assert.deepEqual(landscape.cropRect, { x: 0, y: 67, width: 1280, height: 720 });
 const portrait = thumbnail.thumbnailGeometry(800, 1200);
-assert.equal(portrait.width, 96);
-assert.equal(portrait.height, 54);
+assert.equal(portrait.width, 240);
+assert.equal(portrait.height, 135);
 assert.deepEqual(portrait.cropRect, { x: 0, y: 375, width: 800, height: 450 });
 assert.deepEqual(portrait.imageUvOffset, [0, 375 / 1200]);
 assert.deepEqual(portrait.imageUvScale, [1, 450 / 1200]);
@@ -149,8 +149,8 @@ assert.ok(Math.abs(wide.cropRect.width - 500 * 16 / 9) < 1e-9);
 assert.equal(wide.cropRect.y, 0);
 assert.equal(wide.cropRect.height, 500);
 const tiny = thumbnail.thumbnailGeometry(1, 1);
-assert.equal(tiny.width, 96);
-assert.equal(tiny.height, 54);
+assert.equal(tiny.width, 240);
+assert.equal(tiny.height, 135);
 assert.throws(() => thumbnail.thumbnailGeometry(0, 100), /Invalid photo dimensions/);
 
 const ids = manifest.map((stock) => stock.id);
@@ -290,6 +290,25 @@ for (const sample of [[], [0], [1, 2], [1, 2, 3], [255, 254, 253, 0]]) {
   assert.equal(encoded, Buffer.from(sample).toString('base64'), `base64 mismatch for ${sample}`);
 }
 assert.equal(thumbnail.toBase64(new Uint8Array([77, 97, 110])), 'TWFu');
+
+// --- the editor chrome: toolbar tabs and the bottom sheet ---------------------
+
+assert.equal(ui.nextPanel('', 'adjust', true), 'adjust');
+assert.equal(ui.nextPanel('adjust', 'adjust', true), '', 'tapping the open tab collapses it');
+assert.equal(ui.nextPanel('adjust', 'effects', true), 'effects', 'the other tab switches the content');
+assert.equal(ui.nextPanel('effects', 'film', true), '', '胶片 closes the sheet');
+assert.equal(ui.nextPanel('', 'adjust', false), '', 'no sheet without a photo');
+assert.equal(ui.nextPanel('adjust', 'unknown', true), '');
+assert.equal(ui.activeTab(''), 'film');
+assert.equal(ui.activeTab('adjust'), 'adjust');
+assert.equal(ui.activeTab('effects'), 'effects');
+assert.deepEqual(Object.keys(ui.TAB_LABELS), ['film', 'adjust', 'effects']);
+assert.equal(ui.sheetCoverage({ top: 100, bottom: 900, height: 800 }, { top: 500 }), 400);
+assert.equal(ui.sheetCoverage({ top: 100, bottom: 900, height: 800 }, { top: 950 }), 0);
+assert.equal(ui.sheetCoverage({ top: 100, bottom: 900, height: 800 }, { top: 0 }), 600,
+  'at least a quarter of the stage stays free for the photo');
+assert.equal(ui.sheetCoverage(null, { top: 5 }), 0);
+assert.equal(ui.sheetCoverage({ top: 0, bottom: 0, height: 0 }, { top: 0 }), 0);
 
 console.log(
   'UI state tests: PASS (adjustment ranges/steps, readouts, grouping, thumbnail policy, ' +

@@ -169,6 +169,51 @@
     };
   }
 
+  // The photo is fitted into the buffer minus a presentation inset (the CSS
+  // pixels that an overlay such as the adjustment sheet covers). The buffer
+  // itself never changes: only where the photo is drawn inside it. y is in GL
+  // coordinates (bottom-up), so the bottom inset raises the photo.
+  function normalizeInset(inset) {
+    const source = inset || {};
+    const read = (value) => (Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : 0);
+    return {
+      top: read(source.top),
+      right: read(source.right),
+      bottom: read(source.bottom),
+      left: read(source.left),
+    };
+  }
+
+  function computePresentationRect(bufferWidth, bufferHeight, photoWidth, photoHeight, insetPx) {
+    const inset = normalizeInset(insetPx);
+    // Never swallow the whole buffer: keep at least a quarter of each axis.
+    const maxHorizontal = Math.floor(bufferWidth * 0.75);
+    const maxVertical = Math.floor(bufferHeight * 0.75);
+    let left = Math.round(inset.left);
+    let right = Math.round(inset.right);
+    let top = Math.round(inset.top);
+    let bottom = Math.round(inset.bottom);
+    if (left + right > maxHorizontal) {
+      const factor = maxHorizontal / (left + right);
+      left = Math.floor(left * factor);
+      right = Math.floor(right * factor);
+    }
+    if (top + bottom > maxVertical) {
+      const factor = maxVertical / (top + bottom);
+      top = Math.floor(top * factor);
+      bottom = Math.floor(bottom * factor);
+    }
+    const fit = computeAspectFitRect(
+      bufferWidth - left - right, bufferHeight - top - bottom, photoWidth, photoHeight
+    );
+    return {
+      x: fit.x + left,
+      y: fit.y + bottom,
+      width: fit.width,
+      height: fit.height,
+    };
+  }
+
   function computePreviewSize(width, height, devicePixelRatio, maxTextureSize, longEdge) {
     const targetEdge = longEdge || 1280;
     if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
@@ -255,6 +300,8 @@
     };
     let lastPresentation = null;
     let lastBufferGeometry = null;
+    // CSS-pixel insets of the preview (see computePresentationRect).
+    let presentationInset = { top: 0, right: 0, bottom: 0, left: 0 };
     let lastIntensity = 1;
 
     const program = createProgram(gl, options.vertexSource, options.fragmentSource);
@@ -941,6 +988,17 @@ void main() {
       return lastBufferGeometry;
     }
 
+    // The canvas keeps its size; only the area the photo is fitted into
+    // changes. The caller renders again afterwards.
+    function setPresentationInset(inset) {
+      presentationInset = normalizeInset(inset);
+      return Object.assign({}, presentationInset);
+    }
+
+    function getPresentationInset() {
+      return Object.assign({}, presentationInset);
+    }
+
     function setPhoto(source, details, retryDecode) {
       const result = uploadRecord(photoRecord, source, 'photo', null, retryDecode);
       photoRecord.details = details || null;
@@ -1285,8 +1343,18 @@ void main() {
       gl.clearColor(8 / 255, 8 / 255, 8 / 255, 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
       if (hasPhoto) {
-        const photoRect = computeAspectFitRect(
-          bufferWidth, bufferHeight, photoRecord.width, photoRecord.height
+        const scaleX = lastBufferGeometry && lastBufferGeometry.cssWidth > 0
+          ? bufferWidth / lastBufferGeometry.cssWidth : 1;
+        const scaleY = lastBufferGeometry && lastBufferGeometry.cssHeight > 0
+          ? bufferHeight / lastBufferGeometry.cssHeight : 1;
+        const photoRect = computePresentationRect(
+          bufferWidth, bufferHeight, photoRecord.width, photoRecord.height,
+          {
+            top: presentationInset.top * scaleY,
+            bottom: presentationInset.bottom * scaleY,
+            left: presentationInset.left * scaleX,
+            right: presentationInset.right * scaleX,
+          }
         );
         const target = defaultTarget(photoRect.width, photoRect.height);
         // Frame-relative effects use the photo rect, not the letterboxed stage.
@@ -1757,6 +1825,8 @@ void main() {
       maxViewportDims: bufferLimits.maxViewportDims.slice(),
       resize,
       resizeToCssSize,
+      setPresentationInset,
+      getPresentationInset,
       setPhoto,
       setLut,
       setExtendedLut,
@@ -1783,6 +1853,7 @@ void main() {
     computePreviewSize,
     computeDrawingBufferSize,
     computeAspectFitRect,
+    computePresentationRect,
     computeFrameRect,
     createRenderer,
   };

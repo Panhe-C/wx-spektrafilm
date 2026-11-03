@@ -21,8 +21,8 @@
   // squeezed. Keep the renderer, <image mode>, WXSS padding, and diagnostics
   // tied to this one geometry policy.
   const THUMBNAIL_ASPECT = 16 / 9;
-  const THUMBNAIL_WIDTH = 96;
-  const THUMBNAIL_HEIGHT = 54;
+  const THUMBNAIL_WIDTH = 240;
+  const THUMBNAIL_HEIGHT = 135;
 
   function thumbnailGeometry(photoWidth, photoHeight) {
     const width = Number(photoWidth);

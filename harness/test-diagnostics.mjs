@@ -38,7 +38,7 @@ const report = {
     sizingRule: 'photo pixels; CSS contain',
   },
   photo: { type: 'offscreen-2d-canvas', width: 1280, height: 854 },
-  thumbnail: { width: 96, height: 54, boxAspect: 16 / 9, cropRect: { x: 0, y: 67, width: 1280, height: 720 } },
+  thumbnail: { width: 240, height: 135, boxAspect: 16 / 9, cropRect: { x: 0, y: 67, width: 1280, height: 720 } },
   upload: {
     preferredStrategy: 'direct',
     activeStrategy: 'direct',

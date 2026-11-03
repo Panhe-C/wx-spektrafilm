@@ -17,6 +17,29 @@ assert.deepEqual(
   Renderer.computeAspectFitRect(640, 400, 480, 640),
   { x: 170, y: 0, width: 300, height: 400 }
 );
+// The bottom sheet insets the presentation; the buffer itself never changes.
+assert.deepEqual(
+  Renderer.computePresentationRect(640, 400, 480, 640, { bottom: 0 }),
+  Renderer.computeAspectFitRect(640, 400, 480, 640),
+  'a zero inset is the plain aspect fit'
+);
+{
+  // 640x800 buffer, 300 px of the bottom covered: a 3:2 landscape photo is
+  // fitted into 640x500 and sits above the sheet (GL y is bottom-up).
+  const rect = Renderer.computePresentationRect(640, 800, 1500, 1000, { bottom: 300 });
+  assert.deepEqual(rect, { x: 0, y: 300 + Math.floor((500 - 427) / 2), width: 640, height: 427 });
+  assert.ok(rect.y >= 300, 'the photo never reaches into the covered band');
+  // A portrait photo is limited by the visible height, not by the buffer.
+  const portrait = Renderer.computePresentationRect(640, 800, 1000, 1500, { bottom: 300 });
+  assert.equal(portrait.height, 500);
+  assert.equal(portrait.width, 333);
+  assert.equal(portrait.x, Math.floor((640 - 333) / 2));
+  assert.ok(Math.abs(portrait.width / portrait.height - 1000 / 1500) < 0.01, 'no squeeze');
+  // Absurd insets are limited so the photo keeps a quarter of the buffer.
+  const huge = Renderer.computePresentationRect(640, 800, 1000, 1000, { bottom: 5000 });
+  assert.ok(huge.height >= 200 && huge.y >= 0 && huge.y + huge.height <= 800);
+}
+
 const clamped = Renderer.computeDrawingBufferSize(360, 200, 2, {
   maxRenderbufferSize: 320, maxViewportDims: [320, 240],
 });
@@ -86,8 +109,8 @@ async function main() {
       assert.equal(item.css.canvasStyleHeight, `${item.css.height}px`);
       assert.equal(item.css.actualWidth, item.css.width);
       assert.equal(item.css.actualHeight, item.css.height);
-      assert.equal(item.thumbnail.width, 96);
-      assert.equal(item.thumbnail.height, 54);
+      assert.equal(item.thumbnail.width, 240);
+      assert.equal(item.thumbnail.height, 135);
       assert.equal(item.thumbnail.imageMode, 'aspectFill');
       assert.ok(Math.abs(
         item.thumbnail.cropRect.width / item.thumbnail.cropRect.height - 16 / 9
@@ -101,10 +124,28 @@ async function main() {
         assert.equal(item.buffer.actualHeight, 177);
       }
     });
+    // The sheet inset: same canvas buffer, the photo is raised above the covered band,
+    // still pixel-exact (default framebuffer == FBO) and never squeezed.
+    {
+      const inset = result.inset;
+      assert.equal(inset.bufferAfter.width, inset.buffer.actualWidth, 'the buffer width is unchanged');
+      assert.equal(inset.bufferAfter.height, inset.buffer.actualHeight, 'the buffer height is unchanged');
+      const band = Math.round(inset.insetCssPx * (inset.buffer.actualHeight / inset.buffer.cssHeight));
+      assert.equal(inset.with.available, true);
+      assert.ok(inset.with.maxDiff <= 1, `inset: default/FBO max ${inset.with.maxDiff}`);
+      assert.ok(inset.with.photoRect.y >= band, `the photo stays above the covered band (${inset.with.photoRect.y} < ${band})`);
+      assert.ok(inset.with.photoRect.y + inset.with.photoRect.height <= inset.buffer.actualHeight);
+      assert.ok(inset.with.photoRect.height < inset.before.photoRect.height, 'the photo shrinks');
+      assert.ok(Math.abs(
+        inset.with.photoRect.width / inset.with.photoRect.height -
+        inset.before.photoRect.width / inset.before.photoRect.height
+      ) < 0.01, 'no squeeze');
+      assert.deepEqual(inset.after.photoRect, inset.before.photoRect, 'closing the sheet restores the full fit');
+    }
     await fs.writeFile(path.join(OUT, 'report.json'), `${JSON.stringify(result, null, 2)}\n`);
     console.log(
       'Presentation checks: PASS (portrait 3:4, oriented EXIF 6/8 fixtures, DPR 2, ' +
-      'clamped buffer; default/FBO <= 1 code; letterbox #080808; 16:9 centre crop)'
+      'clamped buffer; default/FBO <= 1 code; letterbox #080808; 16:9 centre crop; sheet inset)'
     );
   } finally {
     if (browser) {

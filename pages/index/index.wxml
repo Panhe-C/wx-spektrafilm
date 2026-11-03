@@ -1,11 +1,33 @@
 <view class="page">
-  <view class="header">
-    <view class="title" bindlongpress="onOpenDiagnostics">SPEKTRAFILM</view>
-    <view class="subtitle">胶片色彩 · 本机 WebGL 预览</view>
+  <!-- Top bar: import on the left, clear / save / about on the right. -->
+  <view class="topbar">
+    <view class="topbar-left">
+      <view
+        class="top-button {{(!ready || busy) ? 'top-disabled' : ''}}"
+        hover-class="top-hover"
+        data-source="album"
+        bindtap="onChoosePhoto"
+      >相册</view>
+      <view
+        class="top-button {{(!ready || busy) ? 'top-disabled' : ''}}"
+        hover-class="top-hover"
+        data-source="camera"
+        bindtap="onChoosePhoto"
+      >拍照</view>
+    </view>
+    <view class="topbar-brand" bindlongpress="onOpenDiagnostics">SPEKTRAFILM</view>
+    <view class="topbar-right">
+      <view wx:if="{{hasPhoto}}" class="top-button top-clear" hover-class="top-hover" bindtap="onClearPhoto">清除</view>
+      <view
+        class="top-button top-save {{(!hasPhoto || exporting) ? 'top-disabled' : ''}}"
+        hover-class="top-hover"
+        bindtap="onSaveTap"
+      >保存</view>
+      <view class="top-icon" hover-class="top-hover" bindtap="onOpenAbout" aria-label="关于">ⓘ</view>
+    </view>
   </view>
 
-  <view wx:if="{{error}}" class="error-banner" role="alert">{{error}}</view>
-
+  <!-- The preview stage: the dominant area. Its size never changes. -->
   <view
     id="previewStage"
     class="preview-stage {{hasPhoto ? 'has-photo' : 'empty-preview'}}"
@@ -23,6 +45,20 @@
     <view wx:if="{{!hasPhoto}}" class="empty-state">
       <view class="empty-icon">▦</view>
       <view class="empty-title">选择一张照片开始</view>
+      <view class="empty-actions">
+        <view
+          class="empty-button empty-primary {{(!ready || busy) ? 'empty-disabled' : ''}}"
+          hover-class="top-hover"
+          data-source="album"
+          bindtap="onChoosePhoto"
+        >从相册选择</view>
+        <view
+          class="empty-button {{(!ready || busy) ? 'empty-disabled' : ''}}"
+          hover-class="top-hover"
+          data-source="camera"
+          bindtap="onChoosePhoto"
+        >拍照</view>
+      </view>
       <view class="attribution">Film modeling powered by spektrafilm</view>
     </view>
 
@@ -30,26 +66,54 @@
       <view class="loading-spinner"></view>
       <view class="loading-text">{{busyText}}</view>
     </view>
+    <view wx:if="{{busy && !hasPhoto}}" class="initial-loading">
+      <view class="loading-spinner"></view>
+      <text>{{busyText}}</text>
+    </view>
     <view wx:if="{{comparing}}" class="compare-badge">原始照片</view>
+
+    <!-- Messages and export state float above the photo (top of the stage). -->
+    <view class="overlays" catchtouchstart="onNoop" catchtouchend="onNoop">
+      <view wx:if="{{error}}" class="error-banner" role="alert" bindtap="onDismissError">
+        <text class="error-text">{{error}}</text>
+        <text class="error-close">✕</text>
+      </view>
+      <view wx:if="{{exporting}}" class="export-card">
+        <view class="export-text">{{exportText}}</view>
+        <view class="export-bar">
+          <view class="export-bar-fill" style="width: {{exportProgress}}%"></view>
+        </view>
+        <button class="export-cancel" bindtap="onCancelExport">取消</button>
+      </view>
+      <view wx:if="{{exportError && !exporting}}" class="export-card export-card-error">
+        <view class="export-error">{{exportError}}</view>
+        <view class="export-actions">
+          <button wx:if="{{exportCanRetry}}" class="export-mini" bindtap="onRetryExport">重试</button>
+          <button wx:if="{{exportCanOpenSetting}}" class="export-mini" bindtap="onOpenAlbumSetting">打开设置</button>
+          <button class="export-mini" bindtap="onDismissExportError">关闭</button>
+        </view>
+      </view>
+    </view>
   </view>
 
-  <scroll-view class="body-scroll" scroll-y enhanced show-scrollbar="{{false}}">
-    <view class="body-inner">
-
-      <view class="section">
-        <view class="section-header">
-          <text class="section-title">胶片预设</text>
-          <text class="section-hint">{{selectedStockName ? selectedStockName : '未选择'}}</text>
-        </view>
-        <view wx:for="{{categories}}" wx:for-item="category" wx:key="key" class="category">
-          <view class="category-title">{{category.title}}</view>
-          <view class="stock-grid">
+  <!-- Bottom dock: the film strip and the toolbar. -->
+  <view class="dock">
+    <view class="strip-area">
+      <scroll-view
+        wx:if="{{hasPhoto && categories.length}}"
+        class="strip-scroll"
+        scroll-x
+        enhanced
+        show-scrollbar="{{false}}"
+      >
+        <view class="strip-inner">
+          <block wx:for="{{categories}}" wx:for-item="category" wx:key="key">
             <view
               wx:for="{{category.stocks}}"
               wx:for-item="stock"
               wx:key="id"
               id="stock-{{stock.id}}"
-              class="stock-card {{selectedStock === stock.id ? 'stock-selected' : ''}}"
+              class="strip-item {{selectedStock === stock.id ? 'strip-selected' : ''}}"
               data-id="{{stock.id}}"
               bindtap="onStockTap"
             >
@@ -68,317 +132,138 @@
                   <text class="thumb-glyph">▦</text>
                 </view>
               </view>
-              <view class="stock-info">
-                <view class="stock-name">{{stock.name}}</view>
-                <view class="stock-meta">ISO {{stock.iso}}</view>
-                <view class="stock-desc">{{stock.description}}</view>
-              </view>
+              <view class="stock-name">{{stock.name}}</view>
             </view>
-          </view>
+          </block>
         </view>
-        <view wx:if="{{!hasPhoto}}" class="section-empty">选择照片后显示各胶片预览</view>
-      </view>
-
-      <view class="section">
-        <view class="section-header section-header-tap" bindtap="onToggleAdjustments">
-          <text class="section-title">调整</text>
-          <text class="section-chevron">{{adjustOpen ? '收起' : '展开'}}</text>
-        </view>
-        <view wx:if="{{adjustOpen}}" class="section-body">
-          <view class="slider-row">
-            <text class="slider-label">曝光 EV</text>
-            <slider
-              class="control-slider"
-              min="-2"
-              max="2"
-              step="0.1"
-              value="{{adjustments.ev}}"
-              data-key="ev"
-              activeColor="#d6b98a"
-              backgroundColor="#3a3a3a"
-              block-color="#f2dfc0"
-              block-size="18"
-              bindchanging="onAdjustChanging"
-              bindchange="onAdjustChange"
-            />
-            <text class="slider-value">{{readouts.ev}}</text>
-          </view>
-          <view class="slider-row">
-            <text class="slider-label">色温</text>
-            <slider
-              class="control-slider"
-              min="-100"
-              max="100"
-              step="1"
-              value="{{adjustments.temperature}}"
-              data-key="temperature"
-              activeColor="#d6b98a"
-              backgroundColor="#3a3a3a"
-              block-color="#f2dfc0"
-              block-size="18"
-              bindchanging="onAdjustChanging"
-              bindchange="onAdjustChange"
-            />
-            <text class="slider-value">{{readouts.temperature}}</text>
-          </view>
-          <view class="slider-row">
-            <text class="slider-label">色调</text>
-            <slider
-              class="control-slider"
-              min="-100"
-              max="100"
-              step="1"
-              value="{{adjustments.tint}}"
-              data-key="tint"
-              activeColor="#d6b98a"
-              backgroundColor="#3a3a3a"
-              block-color="#f2dfc0"
-              block-size="18"
-              bindchanging="onAdjustChanging"
-              bindchange="onAdjustChange"
-            />
-            <text class="slider-value">{{readouts.tint}}</text>
-          </view>
-          <view class="slider-row">
-            <text class="slider-label">强度</text>
-            <slider
-              class="control-slider"
-              min="0"
-              max="1"
-              step="0.01"
-              value="{{adjustments.intensity}}"
-              data-key="intensity"
-              activeColor="#d6b98a"
-              backgroundColor="#3a3a3a"
-              block-color="#f2dfc0"
-              block-size="18"
-              bindchanging="onAdjustChanging"
-              bindchange="onAdjustChange"
-            />
-            <text class="slider-value">{{readouts.intensity}}</text>
-          </view>
-
-          <view class="group-header section-header-tap" bindtap="onTogglePost">
-            <text class="group-title">后期微调（非胶片物理）</text>
-            <text class="section-chevron">{{postOpen ? '收起' : '展开'}}</text>
-          </view>
-          <view wx:if="{{postOpen}}" class="group-body">
-            <view class="slider-row">
-              <text class="slider-label">对比度</text>
-              <slider
-                class="control-slider"
-                min="-1"
-                max="1"
-                step="0.01"
-                value="{{adjustments.contrast}}"
-                data-key="contrast"
-                activeColor="#8fb0d6"
-                backgroundColor="#3a3a3a"
-                block-color="#cfe0f5"
-                block-size="18"
-                bindchanging="onAdjustChanging"
-                bindchange="onAdjustChange"
-              />
-              <text class="slider-value">{{readouts.contrast}}</text>
-            </view>
-            <view class="slider-row">
-              <text class="slider-label">饱和度</text>
-              <slider
-                class="control-slider"
-                min="0"
-                max="2"
-                step="0.05"
-                value="{{adjustments.saturation}}"
-                data-key="saturation"
-                activeColor="#8fb0d6"
-                backgroundColor="#3a3a3a"
-                block-color="#cfe0f5"
-                block-size="18"
-                bindchanging="onAdjustChanging"
-                bindchange="onAdjustChange"
-              />
-              <text class="slider-value">{{readouts.saturation}}</text>
-            </view>
-            <view class="group-note">对比度与饱和度只改变显示观感，不属于胶片物理过程。</view>
-          </view>
-
-          <view wx:if="{{extendedLoading}}" class="inline-note">正在载入扩展 LUT…</view>
-
-          <view class="panel-actions">
-            <button
-              class="reset-button"
-              disabled="{{!resetEnabled}}"
-              bindtap="onResetAdjustments"
-            >重置</button>
-          </view>
-          <view class="panel-hint">按住预览查看原图，松开恢复胶片效果</view>
-        </view>
-      </view>
-
-      <view class="section">
-        <view class="section-header section-header-tap" bindtap="onToggleEffects">
-          <text class="section-title">效果</text>
-          <text class="section-chevron">{{effectsOpen ? '收起' : '展开'}}</text>
-        </view>
-        <view wx:if="{{effectsOpen}}" class="section-body">
-          <view class="slider-row">
-            <text class="slider-label">颗粒</text>
-            <slider
-              class="control-slider"
-              min="0"
-              max="2"
-              step="0.05"
-              value="{{effects.grain}}"
-              data-key="grain"
-              activeColor="#d6b98a"
-              backgroundColor="#3a3a3a"
-              block-color="#f2dfc0"
-              block-size="18"
-              bindchanging="onEffectChanging"
-              bindchange="onEffectChange"
-            />
-            <text class="slider-value">{{effectReadouts.grain}}</text>
-          </view>
-          <view class="slider-row">
-            <text class="slider-label">光晕</text>
-            <slider
-              class="control-slider"
-              min="0"
-              max="2"
-              step="0.05"
-              value="{{effects.halation}}"
-              data-key="halation"
-              activeColor="#d6b98a"
-              backgroundColor="#3a3a3a"
-              block-color="#f2dfc0"
-              block-size="18"
-              bindchanging="onEffectChanging"
-              bindchange="onEffectChange"
-            />
-            <text class="slider-value">{{effectReadouts.halation}}</text>
-          </view>
-          <view class="slider-row">
-            <text class="slider-label">暗角</text>
-            <slider
-              class="control-slider"
-              min="0"
-              max="1"
-              step="0.02"
-              value="{{effects.vignette}}"
-              data-key="vignette"
-              activeColor="#8fb0d6"
-              backgroundColor="#3a3a3a"
-              block-color="#cfe0f5"
-              block-size="18"
-              bindchanging="onEffectChanging"
-              bindchange="onEffectChange"
-            />
-            <text class="slider-value">{{effectReadouts.vignette}}</text>
-          </view>
-          <view class="group-note">颗粒与光晕是依据 spektrafilm 物理流程测得的近似效果，并非逐像素真实模拟；暗角为非物理的镜头暗角。预设缩略图不包含这些效果。</view>
-          <view class="panel-actions">
-            <button
-              class="reset-button"
-              bindtap="onResetEffects"
-            >重置效果</button>
-          </view>
-        </view>
-      </view>
-
-      <view class="section">
-        <view class="section-header">
-          <text class="section-title">导出</text>
-          <text class="section-hint">原图分辨率</text>
-        </view>
-        <view class="section-body">
-          <view class="group-note">以原始分辨率导出当前胶片效果（最长边 4096 px，JPEG 92%）。原照片不会被修改，导出期间可随时取消。</view>
-          <view wx:if="{{exporting}}" class="export-progress-box">
-            <view class="export-text">{{exportText}}</view>
-            <view class="export-bar">
-              <view class="export-bar-fill" style="width: {{exportProgress}}%"></view>
-            </view>
-            <button class="export-cancel" bindtap="onCancelExport">取消</button>
-          </view>
-          <view wx:if="{{exportError}}" class="export-error">{{exportError}}</view>
-          <view wx:if="{{exportCanRetry || exportCanOpenSetting}}" class="panel-actions export-actions">
-            <button
-              wx:if="{{exportCanRetry}}"
-              class="reset-button"
-              bindtap="onRetryExport"
-            >重试</button>
-            <button
-              wx:if="{{exportCanOpenSetting}}"
-              class="reset-button"
-              bindtap="onOpenAlbumSetting"
-            >打开设置</button>
-          </view>
-          <view class="panel-actions">
-            <button
-              class="reset-button export-button"
-              disabled="{{!hasPhoto || exporting}}"
-              bindtap="onSaveTap"
-            >保存到相册</button>
-          </view>
-        </view>
-      </view>
-
-      <view class="section">
-        <view class="section-header section-header-tap" bindtap="onToggleAbout">
-          <text class="section-title">关于</text>
-          <text class="section-chevron">{{aboutOpen ? '收起' : '展开'}}</text>
-        </view>
-        <view wx:if="{{aboutOpen}}" class="section-body">
-          <view class="about-row">
-            <text class="about-key">色彩模拟</text>
-            <text class="about-value">胶片模拟基于 spektrafilm（Andrea Volpato）</text>
-          </view>
-          <view class="about-row">
-            <text class="about-key">项目地址</text>
-            <text class="about-link" bindtap="onCopySourceUrl">{{sourceUrl}}</text>
-          </view>
-          <view class="about-row">
-            <text class="about-key">许可</text>
-            <text class="about-value">本项目代码以 GPLv3 发布；LUT 与色彩配置数据来自 spektrafilm，遵循 CC BY-SA 4.0（Andrea Volpato）。</text>
-          </view>
-          <view class="about-row">
-            <text class="about-key">版本</text>
-            <text class="about-value">{{version}}</text>
-          </view>
-          <view class="about-row">
-            <text class="about-key">设备诊断</text>
-            <button class="about-diagnostic" bindtap="onOpenDiagnostics">诊断</button>
-          </view>
-          <view class="about-row">
-            <text class="about-key">隐私保护指引</text>
-            <button class="about-diagnostic" bindtap="onOpenPrivacyContract">查看</button>
-          </view>
-          <view class="about-note">颗粒与光晕为近似效果（详见 docs/EFFECTS.md）；扩散滤镜、耀光、锐化仍未包含。</view>
-        </view>
-      </view>
-
-      <view class="body-tail"></view>
+      </scroll-view>
+      <view wx:else class="strip-empty">{{hasPhoto ? '正在准备胶片预设…' : '选择照片后显示各胶片预览'}}</view>
     </view>
-  </scroll-view>
 
-  <view wx:if="{{busy && !hasPhoto}}" class="initial-loading">
-    <view class="loading-spinner"></view>
-    <text>{{busyText}}</text>
+    <view class="toolbar">
+      <view
+        wx:for="{{tabs}}"
+        wx:key="key"
+        class="tab {{activeTab === item.key ? 'tab-active' : ''}} {{(!hasPhoto && item.key !== 'film') ? 'tab-disabled' : ''}}"
+        data-tab="{{item.key}}"
+        bindtap="onTabTap"
+      >
+        <text class="tab-glyph">{{item.glyph}}</text>
+        <text class="tab-label">{{item.label}}</text>
+      </view>
+    </view>
   </view>
 
-  <view class="actions">
-    <button
-      class="action-button primary-action"
-      disabled="{{!ready || busy}}"
-      data-source="album"
-      bindtap="onChoosePhoto"
-    >从相册选择</button>
-    <button
-      class="action-button"
-      disabled="{{!ready || busy}}"
-      data-source="camera"
-      bindtap="onChoosePhoto"
-    >拍照</button>
-    <button wx:if="{{hasPhoto}}" class="clear-button" bindtap="onClearPhoto">清除</button>
+  <!-- Bottom sheet over the lower part of the stage (the canvas stays put). -->
+  <view wx:if="{{panel}}" id="editSheet" class="sheet">
+    <view class="sheet-header">
+      <text class="sheet-title">{{sheetTitle}}</text>
+      <view class="sheet-header-actions">
+        <view
+          class="sheet-reset {{sheetResetEnabled ? '' : 'sheet-disabled'}}"
+          hover-class="top-hover"
+          bindtap="onSheetReset"
+        >重置</view>
+        <view class="sheet-close" hover-class="top-hover" bindtap="onCloseSheet">完成</view>
+      </view>
+    </view>
+    <scroll-view class="sheet-scroll" scroll-y enhanced show-scrollbar="{{false}}">
+      <view class="sheet-body">
+        <block wx:if="{{panel === 'adjust'}}">
+          <view
+            wx:for="{{adjustSliders}}"
+            wx:key="key"
+            class="slider-block"
+          >
+            <view wx:if="{{item.groupTitle}}" class="group-title">{{item.groupTitle}}</view>
+            <view class="slider-row">
+              <text class="slider-label">{{item.label}}</text>
+              <slider
+                class="control-slider"
+                min="{{item.min}}"
+                max="{{item.max}}"
+                step="{{item.step}}"
+                value="{{adjustments[item.key]}}"
+                data-key="{{item.key}}"
+                activeColor="{{item.color}}"
+                backgroundColor="#3a3a3a"
+                block-color="{{item.blockColor}}"
+                block-size="18"
+                bindchanging="onAdjustChanging"
+                bindchange="onAdjustChange"
+              />
+              <text class="slider-value">{{readouts[item.key]}}</text>
+            </view>
+          </view>
+          <view wx:if="{{extendedLoading}}" class="inline-note">正在载入扩展 LUT…</view>
+          <view class="group-note">对比度与饱和度只改变显示观感，不属于胶片物理过程。按住预览可查看原图。</view>
+        </block>
+        <block wx:if="{{panel === 'effects'}}">
+          <view
+            wx:for="{{effectSliders}}"
+            wx:key="key"
+            class="slider-block"
+          >
+            <view class="slider-row">
+              <text class="slider-label">{{item.label}}</text>
+              <slider
+                class="control-slider"
+                min="{{item.min}}"
+                max="{{item.max}}"
+                step="{{item.step}}"
+                value="{{effects[item.key]}}"
+                data-key="{{item.key}}"
+                activeColor="{{item.color}}"
+                backgroundColor="#3a3a3a"
+                block-color="{{item.blockColor}}"
+                block-size="18"
+                bindchanging="onEffectChanging"
+                bindchange="onEffectChange"
+              />
+              <text class="slider-value">{{effectReadouts[item.key]}}</text>
+            </view>
+          </view>
+          <view class="group-note">颗粒与光晕是依据 spektrafilm 物理流程测得的近似效果，并非逐像素真实模拟；暗角为非物理的镜头暗角。预设缩略图不包含这些效果。</view>
+        </block>
+      </view>
+    </scroll-view>
+  </view>
+
+  <!-- About: attribution, licence, version, diagnostics, privacy guide. -->
+  <view wx:if="{{aboutOpen}}" class="about-modal" bindtap="onCloseAbout">
+    <view class="about-panel" catchtap="onNoop">
+      <view class="about-header">
+        <text class="about-title">关于</text>
+        <view class="about-close" hover-class="top-hover" bindtap="onCloseAbout">关闭</view>
+      </view>
+      <scroll-view class="about-scroll" scroll-y>
+        <view class="about-row">
+          <text class="about-key">色彩模拟</text>
+          <text class="about-value">胶片模拟基于 spektrafilm（Andrea Volpato）</text>
+        </view>
+        <view class="about-row">
+          <text class="about-key">项目地址</text>
+          <text class="about-link" bindtap="onCopySourceUrl">{{sourceUrl}}</text>
+        </view>
+        <view class="about-row">
+          <text class="about-key">许可</text>
+          <text class="about-value">本项目代码以 GPLv3 发布；LUT 与色彩配置数据来自 spektrafilm，遵循 CC BY-SA 4.0（Andrea Volpato）。</text>
+        </view>
+        <view class="about-row">
+          <text class="about-key">版本</text>
+          <text class="about-value">{{version}}</text>
+        </view>
+        <view class="about-row">
+          <text class="about-key">设备诊断</text>
+          <button class="about-diagnostic" bindtap="onOpenDiagnostics">诊断</button>
+        </view>
+        <view class="about-row">
+          <text class="about-key">隐私保护指引</text>
+          <button class="about-diagnostic" bindtap="onOpenPrivacyContract">查看</button>
+        </view>
+        <view class="about-note">颗粒与光晕为近似效果（详见 docs/EFFECTS.md）；扩散滤镜、耀光、锐化仍未包含。</view>
+      </scroll-view>
+    </view>
   </view>
 
   <view wx:if="{{privacyVisible}}" class="privacy-modal">

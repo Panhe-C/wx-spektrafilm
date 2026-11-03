@@ -363,7 +363,67 @@
     };
   }
 
+  // --- the editor chrome: toolbar tabs and the bottom sheet ----------------
+
+  // The editor page has a fixed layout: top bar, the preview stage (the
+  // dominant area), the film strip and the toolbar. A bottom sheet that
+  // overlays the lower part of the stage carries the extra controls. The
+  // canvas is never resized by the sheet; the renderer fits the photo into
+  // the visible part of the stage instead (see setPresentationInset).
+  const PANELS = Object.freeze({ NONE: '', ADJUST: 'adjust', EFFECTS: 'effects' });
+  const TABS = Object.freeze({ FILM: 'film', ADJUST: 'adjust', EFFECTS: 'effects' });
+  const TAB_LABELS = Object.freeze({ film: '胶片', adjust: '调整', effects: '效果' });
+  const SHEET_TITLES = Object.freeze({ adjust: '调整', effects: '效果' });
+
+  /**
+   * The sheet after a toolbar tap. 「胶片」 closes the sheet (the strip is
+   * always visible); tapping the open tab again collapses it; the other tab
+   * switches the content. Without a photo no sheet can be open.
+   */
+  function nextPanel(current, tab, hasPhoto) {
+    if (!hasPhoto) {
+      return PANELS.NONE;
+    }
+    if (tab === TABS.ADJUST || tab === TABS.EFFECTS) {
+      return current === tab ? PANELS.NONE : tab;
+    }
+    return PANELS.NONE;
+  }
+
+  /** The toolbar tab that is highlighted for a sheet state. */
+  function activeTab(panel) {
+    return panel === PANELS.ADJUST || panel === PANELS.EFFECTS ? panel : TABS.FILM;
+  }
+
+  /**
+   * How many CSS pixels of the bottom of the stage the sheet covers. The
+   * result is clamped so that at least a quarter of the stage stays free for
+   * the photo whatever the measured rects are.
+   */
+  function sheetCoverage(stageRect, sheetRect) {
+    if (!stageRect || !sheetRect) {
+      return 0;
+    }
+    const top = Number(stageRect.top);
+    const bottom = Number(stageRect.bottom !== undefined
+      ? stageRect.bottom : stageRect.top + stageRect.height);
+    const sheetTop = Number(sheetRect.top);
+    const height = bottom - top;
+    if (![top, bottom, sheetTop].every(Number.isFinite) || height <= 0) {
+      return 0;
+    }
+    const covered = Math.max(0, bottom - Math.max(sheetTop, top));
+    return Math.round(Math.min(covered, height * 0.75));
+  }
+
   return {
+    PANELS,
+    TABS,
+    TAB_LABELS,
+    SHEET_TITLES,
+    nextPanel,
+    activeTab,
+    sheetCoverage,
     ADJUSTMENT_DEFAULTS,
     ADJUSTMENT_LIMITS,
     ADJUSTMENT_STEPS,

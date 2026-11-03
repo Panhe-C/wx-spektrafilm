@@ -22,6 +22,48 @@ const DEFAULT_ADJUSTMENTS = ui.ADJUSTMENT_DEFAULTS;
 // physical-ish level; see docs/EFFECTS.md for the measured differences.
 const APP_EFFECT_DEFAULTS = Object.freeze({ grain: 1, halation: 1, vignette: 0 });
 
+const WARM_COLOR = '#d6b98a';
+const WARM_BLOCK = '#f2dfc0';
+const COOL_COLOR = '#8fb0d6';
+const COOL_BLOCK = '#cfe0f5';
+
+// The slider definitions of the bottom sheet. The ranges come from the pure
+// UI modules, so the sheet can never disagree with the clamping policy.
+function buildSliders(limits, steps, specs) {
+  return specs.map((spec) => ({
+    key: spec.key,
+    label: spec.label,
+    min: limits[spec.key][0],
+    max: limits[spec.key][1],
+    step: steps[spec.key],
+    color: spec.post ? COOL_COLOR : WARM_COLOR,
+    blockColor: spec.post ? COOL_BLOCK : WARM_BLOCK,
+    groupTitle: spec.groupTitle || '',
+  }));
+}
+
+const ADJUST_SLIDERS = buildSliders(ui.ADJUSTMENT_LIMITS, ui.ADJUSTMENT_STEPS, [
+  { key: 'ev', label: '曝光 EV' },
+  { key: 'temperature', label: '色温' },
+  { key: 'tint', label: '色调' },
+  { key: 'intensity', label: '强度' },
+  { key: 'contrast', label: '对比度', post: true, groupTitle: '后期微调（非胶片物理）' },
+  { key: 'saturation', label: '饱和度', post: true },
+]);
+
+const EFFECT_SLIDERS = buildSliders(Effects.EFFECT_LIMITS, Effects.EFFECT_STEPS, [
+  { key: 'grain', label: '颗粒' },
+  { key: 'halation', label: '光晕' },
+  { key: 'vignette', label: '暗角', post: true },
+]);
+
+const TOOLBAR_GLYPHS = { film: '◧', adjust: '◐', effects: '✦' };
+const TOOLBAR_TABS = [ui.TABS.FILM, ui.TABS.ADJUST, ui.TABS.EFFECTS].map((key) => ({
+  key,
+  label: ui.TAB_LABELS[key],
+  glyph: TOOLBAR_GLYPHS[key],
+}));
+
 Page({
   data: {
     ready: false,
@@ -33,9 +75,13 @@ Page({
     categories: [],
     selectedStock: '',
     selectedStockName: '',
-    adjustOpen: true,
-    postOpen: false,
-    effectsOpen: true,
+    tabs: TOOLBAR_TABS,
+    adjustSliders: ADJUST_SLIDERS,
+    effectSliders: EFFECT_SLIDERS,
+    panel: ui.PANELS.NONE,
+    activeTab: ui.TABS.FILM,
+    sheetTitle: '',
+    sheetResetEnabled: false,
     aboutOpen: false,
     comparing: false,
     extendedLoading: false,
@@ -135,6 +181,8 @@ Page({
     this.canvasRect = null;
     this.stageRect = null;
     this.lastBufferGeometry = null;
+    this.insetRequestId = 0;
+    this.sheetCoverage = 0;
     try {
       const system = wx.getSystemInfoSync();
       this.devicePixelRatio = system.pixelRatio || 1;
@@ -716,6 +764,43 @@ Page({
     this.flushReadouts();
   },
 
+  // The reset of the open bottom sheet: it only restores the controls that
+  // the sheet shows.
+  onSheetReset() {
+    if (this.data.panel === ui.PANELS.EFFECTS) {
+      this.onResetEffects();
+      return;
+    }
+    this.adjustments = ui.resetAdjustments();
+    if (this.renderer) {
+      this.renderer.setAdjustments(this.adjustments);
+    }
+    this.renderPreview();
+    this.setData({ adjustments: Object.assign({}, this.adjustments) });
+    this.flushReadouts();
+  },
+
+  isAdjustmentsDefault() {
+    return ui.isDefaultState(this.adjustments);
+  },
+
+  isEffectsDefault() {
+    return Effects.EFFECT_KEYS.every(
+      (key) => Number(this.effects[key]) === Number(APP_EFFECT_DEFAULTS[key])
+    );
+  },
+
+  sheetResetState(panel) {
+    const current = panel === undefined ? this.data.panel : panel;
+    if (current === ui.PANELS.ADJUST) {
+      return !this.isAdjustmentsDefault();
+    }
+    if (current === ui.PANELS.EFFECTS) {
+      return !this.isEffectsDefault();
+    }
+    return false;
+  },
+
   isResetState() {
     return ui.isDefaultState(this.adjustments) && Effects.EFFECT_KEYS.every(
       (key) => Number(this.effects[key]) === Number(APP_EFFECT_DEFAULTS[key])
@@ -1010,6 +1095,7 @@ Page({
       readouts: ui.readouts(this.adjustments),
       effectReadouts: Effects.readouts(this.effects),
       resetEnabled: !this.isResetState(),
+      sheetResetEnabled: this.sheetResetState(),
     });
   },
 
@@ -1288,12 +1374,16 @@ Page({
         thresholds: [0, 0.01],
         observeAll: true,
       });
-      this.observer.relativeToViewport({ bottom: 240 }).observe('.stock-card', (result) => {
+      const onVisible = (result) => {
         if (!result || !result.id) {
           return;
         }
         this.prioritiseThumbnail(String(result.id).replace(/^stock-/, ''));
-      });
+      };
+      // The strip scrolls horizontally: items near the scroll-view edges are
+      // generated first, the rest follow in manifest order.
+      this.observer.relativeToViewport({ left: 240, right: 240 })
+        .observe('.strip-item', onVisible);
     } catch (error) {
       this.observer = null;
     }
@@ -1404,7 +1494,7 @@ Page({
   },
 
   onOpenDiagnostics() {
-    this.setData({ aboutOpen: true, diagnosticsOpen: true });
+    this.setData({ diagnosticsOpen: true });
     this.runDiagnosticSuite();
   },
 
@@ -1429,20 +1519,93 @@ Page({
     });
   },
 
-  onToggleAdjustments() {
-    this.setData({ adjustOpen: !this.data.adjustOpen });
+  // --- toolbar, bottom sheet, about ---------------------------------------
+
+  onNoop() {},
+
+  onTabTap(event) {
+    const tab = event.currentTarget.dataset.tab;
+    return this.setPanel(ui.nextPanel(this.data.panel, tab, this.data.hasPhoto));
   },
 
-  onTogglePost() {
-    this.setData({ postOpen: !this.data.postOpen });
+  onCloseSheet() {
+    return this.setPanel(ui.PANELS.NONE);
   },
 
-  onToggleEffects() {
-    this.setData({ effectsOpen: !this.data.effectsOpen });
+  setPanel(panel) {
+    if (panel === this.data.panel) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      this.setData({
+        panel,
+        activeTab: ui.activeTab(panel),
+        sheetTitle: ui.SHEET_TITLES[panel] || '',
+        sheetResetEnabled: this.sheetResetState(panel),
+      }, () => {
+        // The canvas keeps its size. Once the sheet is laid out the photo is
+        // fitted into the part of the stage that stays visible.
+        this.applySheetInset().then(resolve, resolve);
+      });
+    });
   },
 
-  onToggleAbout() {
-    this.setData({ aboutOpen: !this.data.aboutOpen });
+  /**
+   * Fit the photo into the visible part of the stage.
+   *
+   * The sheet covers the lower part of the stage. The native canvas is NOT
+   * resized (resizing a WebGL surface on iOS is fragile); the renderer is told
+   * how many CSS pixels at the bottom are covered and redraws the photo into
+   * the remaining area.
+   */
+  applySheetInset() {
+    const request = ++this.insetRequestId;
+    const apply = (covered) => {
+      if (request !== this.insetRequestId) {
+        return;
+      }
+      this.sheetCoverage = covered;
+      if (this.renderer && typeof this.renderer.setPresentationInset === 'function') {
+        this.renderer.setPresentationInset({ bottom: covered });
+      }
+      this.schedulePreviewRender(true);
+    };
+    if (!this.data.panel) {
+      apply(0);
+      return Promise.resolve(0);
+    }
+    const read = (selector) => new Promise((resolve) => {
+      wx.createSelectorQuery()
+        .select(selector)
+        .boundingClientRect()
+        .exec((result) => resolve(result && result[0] ? result[0] : null));
+    });
+    return Promise.all([read('#previewStage'), read('#editSheet')]).then(([stage, sheet]) => {
+      const covered = ui.sheetCoverage(stage, sheet);
+      apply(covered);
+      return covered;
+    });
+  },
+
+  onOpenAbout() {
+    this.setData({ aboutOpen: true });
+  },
+
+  onCloseAbout() {
+    this.setData({ aboutOpen: false });
+  },
+
+  onDismissError() {
+    this.setData({ error: '' });
+  },
+
+  onDismissExportError() {
+    this.setData({
+      exportError: '',
+      exportCanRetry: false,
+      exportCanOpenSetting: false,
+      exportStatus: ui.EXPORT_STATUS.IDLE,
+    });
   },
 
   onCopySourceUrl() {
@@ -1487,7 +1650,16 @@ Page({
       comparing: false,
       canvasStyle: 'width: 100%; height: 100%;',
       categories: [],
+      panel: ui.PANELS.NONE,
+      activeTab: ui.TABS.FILM,
+      sheetTitle: '',
+      sheetResetEnabled: false,
     });
+    this.sheetCoverage = 0;
+    this.insetRequestId += 1;
+    if (this.renderer && typeof this.renderer.setPresentationInset === 'function') {
+      this.renderer.setPresentationInset({ bottom: 0 });
+    }
   },
 
   fitCanvas() {

@@ -596,7 +596,33 @@
         thumbnail: thumbnailGeometry,
       });
     }
-    return { cases: results };
+    // The bottom sheet insets the photo; the canvas buffer must not change.
+    const insetCase = cases[0];
+    await setPhotoData(insetCase.data, insetCase.width, insetCase.height);
+    renderer.setLut(images.base, stock, images.extended);
+    const insetBuffer = renderer.resizeToCssSize(
+      insetCase.cssWidth, insetCase.cssHeight, insetCase.pixelRatio
+    );
+    renderer.render(1);
+    const beforeInset = renderer.runDiagnostics().defaultFramebuffer;
+    renderer.setPresentationInset({ bottom: 80 });
+    renderer.render(1);
+    const withInset = renderer.runDiagnostics().defaultFramebuffer;
+    const insetBufferAfter = { width: canvas.width, height: canvas.height };
+    renderer.setPresentationInset({ bottom: 0 });
+    renderer.render(1);
+    const afterInset = renderer.runDiagnostics().defaultFramebuffer;
+    return {
+      cases: results,
+      inset: {
+        buffer: insetBuffer,
+        bufferAfter: insetBufferAfter,
+        insetCssPx: 80,
+        before: beforeInset,
+        with: withInset,
+        after: afterInset,
+      },
+    };
   }
 
   async function verifyUploadStrategiesAndDiagnostics() {

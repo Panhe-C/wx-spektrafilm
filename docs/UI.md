@@ -7,50 +7,106 @@ thumbnail path, the slider/`setData` policy, and the real-device checklist that 
 executed by hand. The renderer and the adjustment model are documented in `docs/RENDERER.md` and
 `docs/ADJUSTMENTS.md`; the physical EV/WB measurements are in `docs/EXPOSURE_EV.md`.
 
-## Page structure
+## Page structure (photo-editor layout)
 
-The single page `pages/index/index` is a fixed dark layout: a header, the WebGL preview, a
-scrollable body with five sections, and a pinned action bar.
+The single page `pages/index/index` follows the layout of mainstream mobile editors (VSCO,
+Lightroom Mobile, 醒图): the **photo is the dominant element**, the film presets are a one-row
+strip under it, and the extra controls live in a bottom sheet behind a toolbar button.
 
 ```text
-.page  (flex column, 100vh)
-├── .header                 SPEKTRAFILM / 胶片色彩 · 本机 WebGL 预览
-├── .error-banner           friendly failure + truncated raw errMsg diagnostics (conditional)
-├── .preview-stage          <canvas type="webgl"> + empty state + loading mask + compare badge
-├── .body-scroll            <scroll-view scroll-y>
-│   ├── 胶片预设             three category sections, cards with name / ISO / description / thumbnail
-│   ├── 调整                 曝光 EV, 色温, 色调, 强度, 后期微调（对比度, 饱和度）, 重置
-│   ├── 效果                 颗粒, 光晕, 暗角, 重置效果
-│   ├── 导出                 说明, 进度条 + 取消, 保存到相册, 失败原因 + 重试 / 打开设置
-│   └── 关于                 attribution, licence, version, effect-scope note, 隐私保护指引, 诊断
-├── .privacy-modal           隐私保护指引 popup: 同意（agreePrivacyAuthorization）/ 拒绝 (conditional)
-├── .diagnostics-modal      copyable monospaced device report (conditional)
-└── .actions                从相册选择 / 拍照 / 清除  (+ safe-area padding)
+.page  (flex column, 100vh, dark)
+├── .topbar                 相册 · 拍照 │ SPEKTRAFILM (long-press = 诊断) │ 清除 · 保存 · ⓘ(关于)
+├── .preview-stage          flex: 1 — the ONLY flexible area. Holds
+│   ├── <canvas type="webgl">   absolute, 100% × 100%, never resized by the chrome
+│   ├── .empty-state            icon, 「选择一张照片开始」, 从相册选择 / 拍照
+│   ├── .loading-mask / .compare-badge
+│   └── .overlays               error banner (tap to dismiss), export progress card, export error card
+├── .dock                   fixed height
+│   ├── .strip-area             <scroll-view scroll-x> film strip (all 11 stocks, three categories in order)
+│   └── .toolbar                胶片 │ 调整 │ 效果   (+ safe-area-inset-bottom)
+├── .sheet                  absolute, bottom = toolbar top; overlays the strip and the lower stage
+│   ├── header                  title, 重置, 完成
+│   └── <scroll-view scroll-y>  sliders of the open tab
+├── .about-modal            attribution, licence, version, 诊断, 隐私保护指引 (from ⓘ)
+├── .privacy-modal          隐私保护指引 popup: 同意（agreePrivacyAuthorization）/ 拒绝
+└── .diagnostics-modal      copyable monospaced device report
 ```
+
+Nothing scrolls except the strip (horizontally) and the sheet (vertically); `disableScroll` is on.
+
+### Toolbar and bottom sheet
+
+| Toolbar tab | What it shows |
+|---|---|
+| 胶片 (default) | no sheet; the film strip is the only panel |
+| 调整 | sheet with 曝光 EV, 色温, 色调, 强度, then 「后期微调（非胶片物理）」: 对比度, 饱和度 |
+| 效果 | sheet with 颗粒, 光晕, 暗角 and the note that grain/halation are approximations |
+
+`ui.nextPanel(current, tab, hasPhoto)` is the whole state machine: tapping 调整/效果 opens it,
+tapping the open tab again collapses it, tapping the other tab switches the content, 胶片 or
+「完成」 closes it, and nothing opens without a photo (the tabs are dimmed). The sheet's 「重置」
+restores only the controls of the open tab (the six adjustments, or the three effects); it is
+disabled while they are at their defaults. `onResetAdjustments` (restore both) is still on the page
+for tests/tools but is no longer bound in the WXML.
+
+**The canvas never changes size.** The WebGL surface is resized on iOS only by `fitCanvas()`
+(`onResize`, a new photo), never by the chrome. The sheet *overlays* the lower part of the stage
+and the photo stays visible above it like this:
+
+1. `setPanel()` writes `panel` and, in the `setData` callback, calls `applySheetInset()`;
+2. `applySheetInset()` measures `#previewStage` and `#editSheet` (`boundingClientRect`) and
+   `ui.sheetCoverage()` returns how many CSS px of the stage bottom the sheet covers (clamped to
+   75 % of the stage);
+3. `renderer.setPresentationInset({ bottom })` stores that inset; `render()` fits the photo into
+   the buffer **minus the inset** (`computePresentationRect`: aspect-fit in the remaining area, then
+   moved up by the inset; GL y is bottom-up) and the page schedules two rAF frames;
+4. closing the sheet sets the inset to 0, which is exactly the original full-stage aspect fit.
+
+Only the *viewport the photo is drawn into* changes: LUT, adjustment, effect math, the
+letterbox clear colour (`#080808`), the photo-rect-relative grain/halation/vignette and the
+default-framebuffer-equals-FBO property are untouched (`harness/test-presentation.mjs` checks the
+inset case: unchanged buffer, photo above the covered band, no squeeze, default/FBO ≤ 1 code,
+closing restores the original rect). Export is independent of the preview inset.
+
+The page keeps the **same layout in every state** (empty, loading, ready, error): the error banner,
+export card and loading mask are overlays inside the stage, so the stage height is constant and
+the first photo does not re-layout the native surface.
 
 Design rules that the stylesheet keeps:
 
-- one spacing scale (8 rpx steps), one accent colour (`#d6b98a`), one card radius (14 rpx);
-- every interactive row is at least 72 rpx tall, the action buttons are 84 rpx (`line-height`);
-- the action bar and the about row use `env(safe-area-inset-bottom)` padding;
-- the preview canvas always fills the stage (`100% × 100%`), including the empty state; the stage has
-  a fixed height (`42vh`, `min-height: 400rpx`), so the first photo does not re-layout the native
-  surface or jump the page;
-- the thumbnail box has a fixed **16:9** ratio (`padding-bottom:56.25%`) and the placeholder occupies
-  exactly the same box as the finished image, so a thumbnail appearing causes no reflow;
+- one spacing scale (8 rpx steps), one accent colour (`#d6b98a`), neutral dark surfaces;
+- tab and top-bar targets are ≥ 60 rpx, the toolbar is 100 rpx + `env(safe-area-inset-bottom)`, the
+  sheet sits above the toolbar so it clears the home indicator;
+- top-bar actions, sheet header actions and the empty-state buttons are `<view>`s, not `<button>`s:
+  WeChat's default button styles (block/auto margins, `[disabled]` background) distort a flex row;
+  the only real buttons left are the ones that need `open-type` (the privacy 「同意」), the
+  about/diagnostics rows and the export card;
+- the thumbnail box keeps its fixed **16:9** ratio (`padding-bottom:56.25%`) and the placeholder
+  occupies exactly the same box as the finished image, so a thumbnail appearing causes no reflow;
 - the slider readouts sit in fixed-width columns, so a changing number never moves the layout;
-- loading and disabled states are explicit: the pick buttons are disabled while busy, the reset
-  button is disabled while every adjustment is at its default, and the preview shows a spinner
-  mask during decode/LUT work.
+- loading and disabled states are explicit: the import actions are dimmed while busy, 保存 is dimmed
+  without a photo or while exporting, the preview shows a spinner mask during decode/LUT work.
 
-### Preset cards
+> **Simulator note.** In WeChat DevTools the native WebGL canvas is not composited same-layer: it
+> draws above sibling views, so overlays that sit on the stage (the sheet's upper part, the error
+> banner, the empty state) are hidden behind the black canvas there. On a phone the canvas is
+> rendered same-layer, as before (loading mask and compare badge already relied on it). To inspect
+> the chrome in the simulator, hide the canvas (`canvasStyle: 'width:1px;height:1px;opacity:0'`).
 
-The cards are grouped by the manifest `category` field, in the order 彩色负片 → 反转片（幻灯片）→
-电影胶片. Each card shows the display name, the ISO speed, one Chinese line describing the
-stock, and a thumbnail rendered from the current photo.
+### Preset strip
 
-The descriptions in `utils/ui-state.js` summarise the published character of each film stock. They
-are not measurements of the shipped cube and make no claim beyond that.
+The strip is one row of fixed-width items (200 rpx) in a `<scroll-view scroll-x>`: a 16:9
+centre-cropped thumbnail of the current photo in that stock's look, and the display name below.
+The selected stock has a 3 rpx accent ring and an accent name; tapping an item applies it at once
+(`onStockTap`, unchanged). The three categories (彩色负片 → 反转片（幻灯片）→ 电影胶片) are kept in
+order inside the strip; the ISO and the one-line description of the old cards are no longer shown.
+Without a photo the strip shows 「选择照片后显示各胶片预览」; while the LUT manifest is being
+prepared 「正在准备胶片预设…」.
+
+Thumbnails are rendered at **240 × 135** (previously 96 × 54), still the same 16:9 centre crop, so
+they stay sharp at 200 rpx on a 3× screen.
+
+The descriptions in `utils/ui-state.js` are retained for tooling but are no longer displayed.
 
 ### Adjustments panel
 
@@ -63,10 +119,10 @@ are not measurements of the shipped cube and make no claim beyond that.
 | 对比度 | −1 … +1 | 0.01 | **no** — display look only (multiplier 0.7 … 1.4) |
 | 饱和度 | 0 … 2 | 0.05 | **no** — display look only |
 
-对比度 and 饱和度 live in a collapsed group titled 「后期微调（非胶片物理）」 so that the
-non-physical controls are never confused with the physical ones. A single 「重置」 button restores
-all six values (including 强度) to their defaults; it does not touch the photo or the selected
-stock, and it is disabled while everything is already at the default.
+对比度 and 饱和度 sit under a heading 「后期微调（非胶片物理）」 inside the 调整 sheet so that the
+non-physical controls are never confused with the physical ones. The sheet's 「重置」 button
+restores all six values (including 强度) to their defaults; it does not touch the photo, the
+selected stock or the effects, and it is disabled while everything is already at the default.
 
 Press-and-hold on the preview still shows the untouched original; the shader short-circuits at
 intensity 0, so the comparison is unaffected by any adjustment.
@@ -84,29 +140,28 @@ lives in `utils/adjust.js::contrastMultiplier` and is documented in `docs/ADJUST
 | 光晕 (halation) | 0 … 2 | 0.05 | approximate — physical back-reflection parameters |
 | 暗角 (vignette) | 0 … 1 | 0.02 | **no** — a lens falloff, not part of the film model |
 
-The panel carries its own 「重置效果」 button; the global 「重置」 in the adjustments panel restores
-the adjustments **and** the effects to the shipped defaults (grain 100 %, halation 100 %,
-vignette 0 %). The panel states that the grain and the halation are approximations and that the
+The 效果 sheet's 「重置」 restores the three effect defaults (grain 100 %, halation 100 %,
+vignette 0 %) without touching the adjustments. The sheet states that the grain and the halation are approximations and that the
 preset thumbnails do not include them.
 
 The effects are applied by the renderer, not by the page: the page owns the state, calls
 `renderer.setEffects()` and redraws, exactly like the adjustment sliders. The preset thumbnails are
 rendered with the effects switched off (`renderToPixels({ effects: … })`).
 
-## Export panel (「导出」)
+## Export (「保存」)
 
-The export panel sits between the 「效果」 and the 「关于」 sections. It explains that the export
-uses the original resolution (long edge 4096 px, JPEG 92 %) and that the original photo is never
-modified, and it owns the 「保存到相册」 button.
+The 「保存」 button of the top bar starts the export (original resolution, long edge 4096 px, JPEG
+92 %; the original photo is never modified). Progress and failures appear as a card at the top of
+the stage, so they stay visible while the sheet is open.
 
 | state | what the panel shows |
 |---|---|
-| idle | the 「保存到相册」 button (disabled without a photo) |
-| running | the stage text (`解码原图 …`, `渲染 2/6…`, `编码 JPEG…`, `保存到相册…`), a progress bar and a 「取消」 button |
+| idle | the 「保存」 button in the top bar (dimmed without a photo) |
+| running | a card with the stage text (`解码原图 …`, `渲染 2/6…`, `编码 JPEG…`, `保存到相册…`), a progress bar and a 「取消」 button |
 | done | a toast: 「已保存到相册」, 「已取消保存」 or the reason of the failure |
-| failed / timed out | the reason in a red box, plus a 「重试」 and a 「打开设置」 button |
+| failed / timed out | a red card with the reason and 「重试」, 「打开设置」, 「关闭」 buttons |
 
-The button is disabled while an export runs, so a second export cannot start. The cancel button
+The button is dimmed (and ignored) while an export runs, so a second export cannot start. The cancel button
 cancels the export signal: the export stops at the next tile boundary, a pending platform call is
 abandoned (its late answer is ignored) and the buffers are released. The pipeline, the permission
 flow, the timeouts and the privacy popup are documented in `docs/EXPORT.md` and `docs/PRIVACY.md`.
@@ -130,7 +185,8 @@ share does not carry any user data.
 
 ## Hidden device diagnostics
 
-**关于 → 诊断** and a long-press on the **SPEKTRAFILM** title open the same modal. Opening or tapping
+**ⓘ → 关于 → 诊断** and a long-press on the **SPEKTRAFILM** brand text in the top bar open the same
+modal (the long-press opens it directly, without the about sheet). Opening or tapping
 **重新运行** executes the shared GL suite; **复制** sends the monospaced report to
 `wx.setClipboardData`, and **关闭** dismisses it. The report contains GL capabilities, canvas and
 source sizes, P/D upload attempts and fallbacks, per-texture completeness parameters/status/GL
@@ -193,7 +249,7 @@ photo texture (already on the GPU)
   → setData on that single card
 ```
 
-- **Geometry**: `utils/thumbnail.js::thumbnailGeometry()` returns a fixed **96×54** target and a
+- **Geometry**: `utils/thumbnail.js::thumbnailGeometry()` returns a fixed **240×135** target and a
   centre-crop rect/UV mapping for the current photo. The FBO samples only that crop; `<image
   mode="aspectFill">` and the 16:9 WXSS box match it. There is no `aspectFit` letterbox and no
   `scaleToFill` squeeze, including for portrait photos.
@@ -202,9 +258,9 @@ photo texture (already on the GPU)
   8-bit RGBA PNG with stored deflate blocks, verified by the Node unit test) is the last file-based
   fallback; if every route fails the card shows a deterministic coloured placeholder and the rest
   of the UI keeps working.
-- **Scheduling**: the selected stock is generated first, then the cards that the
-  `IntersectionObserver` reports as visible or near (`relativeToViewport({ bottom: 240 })`), then
-  the remaining stocks in manifest order. One thumbnail is generated per animation-frame-sized
+- **Scheduling**: the selected stock is generated first, then the strip items that the
+  `IntersectionObserver` reports as visible or near (`relativeToViewport({ left: 240, right: 240 })`
+  on `.strip-item`), then the remaining stocks in manifest order. One thumbnail is generated per animation-frame-sized
   timeout so the UI thread stays responsive.
 - **Cache**: the cache key is the photo plus the stock. It is cleared on every new photo, on
   「清除」, and on unload.
@@ -253,7 +309,7 @@ agree. No per-frame `setData` of the preset list happens.
 **UI-state unit tests** (`harness/test-ui-state.mjs`: ranges, step rounding, readout formats,
 category grouping, thumbnail geometry and ordering, throttle policy, phase machine, PNG fallback
 encoder, base64 encoder), the **page-wiring tests** (`harness/test-page.mjs`: the page module
-boots under a mocked WeChat host, the phase machine drives the busy mask, the sliders update the
+boots under a mocked WeChat host, the toolbar/sheet/inset flow and the layout contract of the WXML/WXSS, the phase machine drives the busy mask, the sliders update the
 renderer while the readouts stay throttled, the reset restores every default, press-and-hold
 compares, the thumbnail path degrades to a placeholder when the export fails, and every WXML
 handler exists on the page), the **pure diagnostics formatter**
@@ -289,42 +345,43 @@ debug session). None of them is covered by the headless harness.
    letterboxed, within about a second on a mid-range phone.
 2. **EXIF** — a photo taken in portrait (EXIF 6) and one with EXIF 8 are shown upright; see
    `docs/ORIENTATION.md` for the auto/manual decision.
-3. **Preset cards** — all three category headers appear, all 11 cards are listed, and the
-   selected card is highlighted.
-4. **Thumbnails** — every card shows a fixed 16:9 centre crop of the current photo in that stock's
-   look, with no black side/top bars and no aspect-ratio squeeze (including portrait and rotated
-   photos); scrolling reveals the remaining thumbnails; the first card is ready almost immediately
-   and the rest arrive within a second or two.
+3. **Preset strip** — one row under the photo, swipes horizontally with momentum, all 11 stocks
+   appear, the selected one has the accent ring and name; no vertical scrolling anywhere on the page.
+4. **Thumbnails** — every strip item shows a fixed 16:9 centre crop of the current photo in that
+   stock's look, with no black side/top bars and no aspect-ratio squeeze (including portrait and
+   rotated photos); the first items are ready almost immediately and the rest arrive within a second
+   or two.
 5. **Thumbnail fallback** — on a device where `wx.canvasToTempFilePath` rejects the offscreen
    canvas, the data-URL or PNG-file fallback must still produce a visible thumbnail; if all three
    fail, the coloured placeholder must appear instead of a broken image.
 6. **Thumbnail invalidation** — choosing a second photo replaces every thumbnail with the new
    photo's look; the old thumbnails must not linger.
-7. **Stock switching** — tapping a card updates the preview immediately and the highlight moves.
+7. **Stock switching** — tapping a strip item updates the preview immediately and the highlight moves.
 8. **Sliders** — 曝光 EV, 色温, 色调 and 强度 move the preview while the finger is down and stop
    cleanly when it is lifted; the readouts never lag noticeably behind the thumb.
 9. **Extended cube** — dragging 曝光 EV above 0 shows 「正在载入扩展 LUT…」 at most once per stock
    and then updates the preview; highlights must not clip while the gain is applied.
-10. **Reset** — 「重置」 restores every slider to its default and is disabled afterwards; the
-    selected stock and the photo stay untouched.
+10. **Reset** — the 调整 sheet's 「重置」 restores every adjustment slider to its default and is
+    disabled afterwards; the selected stock, the effects and the photo stay untouched.
 11. **Press and hold** — holding the preview shows the untouched original, even with EV, white
     balance, contrast and saturation set to extreme values.
-12. **About and diagnostics** — the 「关于」 section shows the spektrafilm credit, the project URL (tap to copy),
+12. **About and diagnostics** — ⓘ opens the about sheet, which shows the spektrafilm credit, the project URL (tap to copy),
     the licence split (GPLv3 code / CC BY-SA 4.0 data), the version, and the note that the grain
     and the halation are approximations.
-13. **Layout** — no horizontal scrolling, no clipped text, no layout jump when a thumbnail
-    appears, and the action bar clears the home indicator on notched phones.
+13. **Layout** — the photo fills the stage (letterboxed on `#080808`), no clipped text, no layout
+    jump when a thumbnail appears or the error banner shows, and the toolbar clears the home
+    indicator on notched phones.
 14. **Performance** — dragging a slider stays smooth on a low-end phone; the page must not
     re-render the preset list while a slider moves.
 15. **Package size** — the built package reports a main package below 2 MB, including the LUT folder;
     the checker also reports the LUT folder's separate contribution.
-16. **Effects panel** — 颗粒, 光晕 and 暗角 move the preview while the finger is down; the readouts
-    follow; 「重置效果」 restores the three defaults; the global 「重置」 clears the adjustments and
-    the effects together.
+16. **Effects sheet** — 颗粒, 光晕 and 暗角 move the preview while the finger is down; the readouts
+    follow; the sheet's 「重置」 restores the three defaults without touching the adjustments (and
+    vice versa).
 17. **Effect performance** — dragging an effect slider stays smooth on a low-end phone. The
     halation needs three extra passes (exposure, horizontal blur, vertical blur) and the grain
     evaluates three noise fields per pixel; both are skipped entirely at strength 0.
-18. **Export** — 「保存到相册」 confirms the privacy guide (the in-app popup),
+18. **Export** — 「保存」 confirms the privacy guide (the in-app popup),
     renders the picture with the current look and writes a JPEG into the album
     (the album scope is not asked for in advance: the save asks for it and the
     app recovers from a refusal with the settings). The progress text and the progress bar
@@ -336,3 +393,11 @@ debug session). None of them is covered by the headless harness.
     memory peak and the time of the export.
 20. **Share** — the app message and the timeline entries appear in the platform menu and open the
     index page.
+21. **Bottom sheet** — 调整 / 效果 open a sheet over the lower part of the screen; the photo
+    re-fits above it **without flicker or a blank frame** (the canvas is not resized) and keeps its
+    aspect; sliders still update the photo live; tapping the tab again or 「完成」 restores the full
+    fit; switching 调整 ⇄ 效果 keeps the sheet; the sheet clears the home indicator; the upper
+    part of the sheet is not hidden behind the canvas (same-layer rendering, see the simulator
+    note). Press-and-hold on the visible photo still shows the original.
+22. **Top bar** — 相册 / 拍照 import, 清除 appears with a photo, 保存 is dimmed without a photo and
+    while exporting, ⓘ opens the about sheet, long-press on SPEKTRAFILM opens the diagnostics.

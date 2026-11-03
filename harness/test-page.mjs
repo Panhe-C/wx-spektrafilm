@@ -407,6 +407,137 @@ assert.equal(share.path, '/pages/index/index');
 const timeline = instance.onShareTimeline();
 assert.ok(timeline.title.length > 0);
 
+// --- the editor chrome: tabs, bottom sheet, about --------------------------
+
+const chrome = createInstance();
+const insets = [];
+chrome.renderer.setPresentationInset = (inset) => insets.push(inset);
+assert.equal(chrome.data.panel, '');
+assert.equal(chrome.data.activeTab, 'film');
+assert.deepEqual(chrome.data.tabs.map((tab) => tab.key), ['film', 'adjust', 'effects']);
+assert.deepEqual(
+  chrome.data.adjustSliders.map((slider) => slider.key),
+  ['ev', 'temperature', 'tint', 'intensity', 'contrast', 'saturation']
+);
+assert.deepEqual(chrome.data.effectSliders.map((slider) => slider.key), ['grain', 'halation', 'vignette']);
+assert.equal(chrome.data.adjustSliders[0].min, -2);
+assert.equal(chrome.data.adjustSliders[0].max, 2);
+assert.equal(chrome.data.adjustSliders[0].step, 0.1);
+assert.ok(chrome.data.adjustSliders[4].groupTitle.indexOf('非胶片物理') !== -1);
+assert.equal(chrome.data.effectSliders[1].max, 2);
+
+// Without a photo the sheet cannot open.
+await chrome.onTabTap({ currentTarget: { dataset: { tab: 'adjust' } } });
+assert.equal(chrome.data.panel, '');
+
+// With a photo the sheet opens, the canvas is not resized, the photo is
+// re-fitted into the visible part and a frame is requested.
+chrome.setData({ hasPhoto: true });
+let resizes = 0;
+const baseResize = chrome.renderer.resizeToCssSize;
+chrome.renderer.resizeToCssSize = (...args) => { resizes += 1; return baseResize(...args); };
+const rects = {
+  '#previewStage': { top: 100, bottom: 900, height: 800, width: 375 },
+  '#editSheet': { top: 560, bottom: 900, height: 340, width: 375 },
+};
+const baseQuery = wx.createSelectorQuery;
+wx.createSelectorQuery = () => ({
+  select: (selector) => ({
+    boundingClientRect: () => ({ exec: (callback) => callback([rects[selector] || null]) }),
+  }),
+});
+chrome.renderer.lastIntensity = undefined;
+await chrome.onTabTap({ currentTarget: { dataset: { tab: 'adjust' } } });
+assert.equal(chrome.data.panel, 'adjust');
+assert.equal(chrome.data.activeTab, 'adjust');
+assert.equal(chrome.data.sheetTitle, '调整');
+assert.deepEqual(insets[insets.length - 1], { bottom: 340 });
+assert.equal(resizes, 0, 'opening the sheet must not resize the canvas');
+assert.equal(chrome.renderer.lastIntensity, 1, 'the preview is redrawn after the inset changed');
+
+// Switching to the effects tab keeps the sheet open; the same tab collapses it.
+await chrome.onTabTap({ currentTarget: { dataset: { tab: 'effects' } } });
+assert.equal(chrome.data.panel, 'effects');
+assert.equal(chrome.data.sheetTitle, '效果');
+await chrome.onTabTap({ currentTarget: { dataset: { tab: 'effects' } } });
+assert.equal(chrome.data.panel, '');
+assert.equal(chrome.data.activeTab, 'film');
+assert.deepEqual(insets[insets.length - 1], { bottom: 0 });
+assert.equal(resizes, 0);
+
+// 「完成」 closes the sheet as well.
+await chrome.onTabTap({ currentTarget: { dataset: { tab: 'adjust' } } });
+await chrome.onCloseSheet();
+assert.equal(chrome.data.panel, '');
+assert.deepEqual(insets[insets.length - 1], { bottom: 0 });
+
+// The sheet reset only restores what the sheet shows.
+await chrome.onTabTap({ currentTarget: { dataset: { tab: 'adjust' } } });
+assert.equal(chrome.data.sheetResetEnabled, false);
+chrome.applyAdjustment('ev', 1, true);
+chrome.applyEffect('grain', 0.5, true);
+assert.equal(chrome.data.sheetResetEnabled, true);
+chrome.onSheetReset();
+assert.equal(chrome.adjustments.ev, 0);
+assert.equal(chrome.effects.grain, 0.5, 'the adjust sheet does not reset the effects');
+assert.equal(chrome.data.sheetResetEnabled, false);
+await chrome.onTabTap({ currentTarget: { dataset: { tab: 'effects' } } });
+assert.equal(chrome.data.sheetResetEnabled, true);
+chrome.onSheetReset();
+assert.equal(chrome.effects.grain, 1);
+assert.equal(chrome.data.sheetResetEnabled, false);
+
+// Clearing the photo closes the sheet and restores the full-stage fit.
+chrome.setData({ hasPhoto: true });
+chrome.onClearPhoto();
+assert.equal(chrome.data.panel, '');
+assert.deepEqual(insets[insets.length - 1], { bottom: 0 });
+wx.createSelectorQuery = baseQuery;
+
+// About, banners and the export card.
+chrome.onOpenAbout();
+assert.equal(chrome.data.aboutOpen, true);
+chrome.onCloseAbout();
+assert.equal(chrome.data.aboutOpen, false);
+chrome.setData({ error: 'x', exportError: 'y', exportCanRetry: true, exportCanOpenSetting: true });
+chrome.onDismissError();
+assert.equal(chrome.data.error, '');
+chrome.onDismissExportError();
+assert.equal(chrome.data.exportError, '');
+assert.equal(chrome.data.exportCanRetry, false);
+chrome.onOpenDiagnostics();
+assert.equal(chrome.data.diagnosticsOpen, true);
+assert.equal(chrome.data.aboutOpen, false, 'a long press on the title opens only the diagnostics');
+
+// --- the layout contract of the WXML/WXSS ----------------------------------
+
+const layoutWxml = fs.readFileSync(path.join(ROOT, 'pages', 'index', 'index.wxml'), 'utf8');
+const layoutWxss = fs.readFileSync(path.join(ROOT, 'pages', 'index', 'index.wxss'), 'utf8');
+// The strip is one horizontally scrolling row.
+assert.match(layoutWxml, /<scroll-view[^>]*class="strip-scroll"[^>]*\bscroll-x\b/);
+assert.ok(!/class="strip-scroll"[^>]*scroll-y/.test(layoutWxml));
+assert.match(layoutWxss, /\.strip-inner\s*{[^}]*display:\s*inline-flex/);
+assert.match(layoutWxss, /\.strip-scroll\s*{[^}]*white-space:\s*nowrap/);
+// The canvas sits directly in the stage, not in the sheet, and the stage is
+// the only flexible area: neither the sheet nor the strip changes its size.
+const stageStart = layoutWxml.indexOf('id="previewStage"');
+const canvasAt = layoutWxml.indexOf('id="previewCanvas"');
+const sheetAt = layoutWxml.indexOf('id="editSheet"');
+const dockAt = layoutWxml.indexOf('class="dock"');
+assert.ok(stageStart > -1 && canvasAt > stageStart && canvasAt < dockAt && dockAt < sheetAt);
+assert.match(layoutWxss, /\.preview-stage\s*{[^}]*flex:\s*1 1 0%/);
+assert.match(layoutWxss, /\.preview-canvas\s*{[^}]*position:\s*absolute[^}]*width:\s*100%[^}]*height:\s*100%/);
+assert.match(layoutWxss, /\.sheet\s*{[^}]*position:\s*absolute/, 'the sheet overlays the stage');
+assert.match(layoutWxss, /\.sheet\s*{[^}]*safe-area-inset-bottom/);
+assert.match(layoutWxss, /\.toolbar\s*{[^}]*safe-area-inset-bottom/);
+assert.ok(!/\.preview-stage\s*{[^}]*\bheight:\s*\d+(vh|rpx)/.test(layoutWxss), 'no fixed stage height');
+// Import, export and the about entry stay reachable without scrolling.
+for (const needle of ['bindtap="onChoosePhoto"', 'bindtap="onSaveTap"', 'bindtap="onOpenAbout"',
+  'bindlongpress="onOpenDiagnostics"', 'bindtap="onOpenPrivacyContract"']) {
+  assert.ok(layoutWxml.includes(needle), `missing ${needle}`);
+}
+assert.ok(!layoutWxml.includes('class="body-scroll"'), 'the page no longer scrolls');
+
 // --- every WXML handler exists on the page ---------------------------------
 
 const wxml = fs.readFileSync(path.join(ROOT, 'pages', 'index', 'index.wxml'), 'utf8');
@@ -424,5 +555,5 @@ for (const handler of handlers) {
 
 console.log(
   `Page wiring tests: PASS (${handlers.size} WXML handlers, phases, sliders, reset, ` +
-  'compare, thumbnails, placeholder fallback)'
+  'compare, thumbnails, placeholder fallback, tabs/sheet/inset, layout contract)'
 );
