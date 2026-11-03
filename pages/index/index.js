@@ -1,6 +1,11 @@
 const shaders = require('../../utils/shaders.js');
 const { createRenderer } = require('../../utils/lut-renderer.js');
-const { loadCanvasImage, preparePhoto } = require('../../utils/photo.js');
+const {
+  getImageInfo,
+  loadCanvasImage,
+  preparePhoto,
+  runOrientedSelfTest,
+} = require('../../utils/photo.js');
 const Adjustments = require('../../utils/adjust.js');
 const Effects = require('../../utils/effects.js');
 const ui = require('../../utils/ui-state.js');
@@ -267,16 +272,39 @@ Page({
   // --- photo picking -------------------------------------------------------
 
   chooseMedia(sourceType) {
+    // 'original' keeps the picked file untouched: a compressed copy would
+    // change the decoded pixels and the aspect the user sees.
+    const sizeType = ['original'];
+    this.chooseMediaSizeType = sizeType;
     return new Promise((resolve, reject) => {
       wx.chooseMedia({
         count: 1,
         mediaType: ['image'],
         sourceType: [sourceType],
-        sizeType: ['compressed', 'original'],
+        sizeType,
         success: resolve,
         fail: reject,
       });
     });
+  },
+
+  describeChosenFile(file) {
+    const path = String((file && file.tempFilePath) || '');
+    const name = path.split('/').pop() || '';
+    const originalPath = String(
+      (file && (file.originalTempFilePath || file.originalPath)) || ''
+    );
+    return {
+      fileName: name,
+      extension: name.indexOf('.') === -1 ? '' : name.split('.').pop().toLowerCase(),
+      sizeBytes: file && Number.isFinite(Number(file.size)) ? Number(file.size) : null,
+      fileType: (file && file.fileType) || '',
+      pickerWidth: file && Number.isFinite(Number(file.width)) ? Number(file.width) : null,
+      pickerHeight: file && Number.isFinite(Number(file.height)) ? Number(file.height) : null,
+      hasThumbTempFilePath: !!(file && file.thumbTempFilePath),
+      originalPathPresent: originalPath.length > 0,
+      sizeType: (this.chooseMediaSizeType || []).join(','),
+    };
   },
 
   async onChoosePhoto(event) {
@@ -298,7 +326,23 @@ Page({
         error.code = 'UNSUPPORTED_TYPE';
         throw error;
       }
-      await this.loadPhoto(file.tempFilePath);
+      const mediaInfo = this.describeChosenFile(file);
+      if (mediaInfo.originalPathPresent) {
+        const originalPath = file.originalTempFilePath || file.originalPath;
+        try {
+          const originalInfo = await getImageInfo(originalPath);
+          mediaInfo.originalInfo = {
+            width: Number(originalInfo.width) || null,
+            height: Number(originalInfo.height) || null,
+            orientation: originalInfo.orientation === undefined
+              ? null : originalInfo.orientation,
+            type: originalInfo.type || '',
+          };
+        } catch (error) {
+          mediaInfo.originalInfoError = String((error && error.errMsg) || error.message || error);
+        }
+      }
+      await this.loadPhoto(file.tempFilePath, mediaInfo);
     } catch (error) {
       if (/cancel/i.test(String((error && (error.errMsg || error.message)) || ''))) {
         this.setData({ error: '已取消选择。' });
@@ -308,7 +352,7 @@ Page({
     }
   },
 
-  async loadPhoto(src) {
+  async loadPhoto(src, mediaInfo) {
     const operation = ++this.operationId;
     this.stockRequestId += 1;
     this.transition('pick');
@@ -327,19 +371,48 @@ Page({
       }
       this.photoSize = { width: prepared.width, height: prepared.height };
       this.photoSrc = src;
+      // Content-level check: does the decode canvas hold the WHOLE image?
+      // It must run while the original Image is still alive.
+      let wholeImageCheck = null;
+      try {
+        wholeImageCheck = prepared.checkWholeImage();
+      } catch (error) {
+        wholeImageCheck = {
+          available: false,
+          error: String((error && error.errMsg) || error.message || error),
+        };
+        console.error('[wx-spektrafilm][diag][geometry] whole-image check failed', error);
+      }
       this.photoSourceInfo = {
         type: 'offscreen-2d-canvas',
         decodedType: 'canvas.createImage-onload',
+        chooseMedia: mediaInfo || null,
         width: prepared.width,
         height: prepared.height,
         sourceWidth: prepared.sourceWidth,
         sourceHeight: prepared.sourceHeight,
         infoWidth: prepared.infoWidth,
         infoHeight: prepared.infoHeight,
+        infoOrientation: prepared.infoOrientation === undefined
+          ? null : prepared.infoOrientation,
+        infoType: prepared.infoType || '',
         decodeCanvasWidth: prepared.decodeCanvasWidth,
         decodeCanvasHeight: prepared.decodeCanvasHeight,
         orientation: prepared.orientation,
         engineApplied: prepared.engineApplied,
+        decisionRow: prepared.decisionRow,
+        decisionReason: prepared.decisionReason,
+        decisionMode: prepared.decisionMode,
+        transformOrientation: prepared.transformOrientation,
+        ambiguousDecision: prepared.ambiguousDecision,
+        draw: prepared.drawInfo,
+        scaleX: prepared.scaleX,
+        scaleY: prepared.scaleY,
+        relativeAspectError: prepared.relativeAspectError,
+        bytesPerPixel: mediaInfo && mediaInfo.sizeBytes && prepared.sourceWidth
+          ? mediaInfo.sizeBytes / (prepared.sourceWidth * prepared.sourceHeight)
+          : null,
+        wholeImageCheck,
       };
       await new Promise((resolve) => {
         this.setData({ hasPhoto: true }, resolve);
@@ -369,6 +442,45 @@ Page({
         photoAllBlack: photoUpload.photoAllBlack,
         decodeRetried: photoUpload.decodeRetried,
       });
+      // The texture, the decode canvas and the prepared size must agree, and
+      // the texture aspect must match the prepared aspect.
+      const textureState = typeof this.renderer.getDiagnostics === 'function'
+        ? (this.renderer.getDiagnostics().textures || [])
+          .find((texture) => texture.name === 'photo')
+        : null;
+      const textureWidth = textureState ? textureState.width : null;
+      const textureHeight = textureState ? textureState.height : null;
+      const preparedAspect = prepared.width / prepared.height;
+      const textureAspect = textureWidth && textureHeight
+        ? textureWidth / textureHeight : null;
+      const aspectRelativeError = textureAspect === null
+        ? null
+        : Math.abs(textureAspect - preparedAspect) / preparedAspect;
+      const dimensionsMatch = textureWidth === null
+        ? null
+        : textureWidth === prepared.width && textureHeight === prepared.height &&
+          prepared.decodeCanvasWidth === prepared.width &&
+          prepared.decodeCanvasHeight === prepared.height;
+      const geometryCheck = {
+        preparedWidth: prepared.width,
+        preparedHeight: prepared.height,
+        decodeCanvasWidth: prepared.decodeCanvasWidth,
+        decodeCanvasHeight: prepared.decodeCanvasHeight,
+        textureWidth,
+        textureHeight,
+        dimensionsMatch,
+        preparedAspect,
+        textureAspect,
+        aspectRelativeError,
+        aspectConsistent: aspectRelativeError === null ? null : aspectRelativeError < 0.01,
+      };
+      this.photoSourceInfo.geometryCheck = geometryCheck;
+      if (dimensionsMatch === false || geometryCheck.aspectConsistent === false) {
+        console.error(
+          '[wx-spektrafilm][diag][geometry] decode/texture geometry mismatch',
+          geometryCheck
+        );
+      }
       if (photoUpload.photoAllBlack) {
         this.setData({ error: '照片读取为全黑，可在 关于 → 诊断 查看' });
       }
@@ -1017,6 +1129,16 @@ Page({
     }
     try {
       const geometry = await this.queryPresentationGeometry();
+      let photoSelfTest = null;
+      try {
+        photoSelfTest = runOrientedSelfTest();
+      } catch (error) {
+        photoSelfTest = {
+          available: false,
+          error: String((error && error.errMsg) || error.message || error),
+        };
+        console.error('[wx-spektrafilm][diag][geometry] self-test failed', error);
+      }
       const canvasRect = geometry.canvasRect || this.canvasRect || this.canvasNodeSize;
       const stageRect = geometry.stageRect || this.stageRect || canvasRect;
       const nodeSize = canvasRect ? {
@@ -1031,6 +1153,7 @@ Page({
         thumbnail: this.lastThumbnailGeometry,
         pixelRatio: this.devicePixelRatio,
         photo: this.photoSourceInfo,
+        photoSelfTest,
         app: {
           name: appInfo.name,
           version: appInfo.version,

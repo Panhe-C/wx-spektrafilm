@@ -331,6 +331,8 @@
    *
    * The host adapters are:
    *   getImageInfo(src)                       -> { width, height, orientation }
+   *        (the host must report the ORIENTED size of the decoded Image, so
+   *         the plan matches the pixels that will be rendered)
    *   decodeImage({src, width, height})       -> { canvas }
    *   createRenderer({...})                   -> renderer
    *   createAssemblyCanvas(width, height)     -> 2D canvas

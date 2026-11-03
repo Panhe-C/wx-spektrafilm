@@ -24,6 +24,9 @@ The code in this repository is licensed under GPLv3 (see LICENSE).
 
 The index page supports album/camera selection, EXIF-upright bounded resizing, a contain/letterbox
 WebGL preview, all 11 stocks, intensity 0–100%, press-and-hold original comparison, and clear.
+The picker requests `sizeType: ['original']`, and the decoded Image's natural dimensions are the
+geometry authority: the offscreen decode canvas receives the **whole** picture through an explicit
+source-rectangle → destination-rectangle mapping, never a magnified top-left crop.
 Photo and LUT sources prefer validated RGBA-byte uploads, with an automatic direct-source fallback;
 this avoids the silent black offscreen-canvas upload seen in the iPhone report. The native preview
 canvas always fills a stable stage, uses a stage-CSS×DPR drawing buffer, renders the photo through a
@@ -152,8 +155,8 @@ headless checks do not replace WeChat DevTools or physical-device testing.
 The final on-box full run passed **66/66 default pairs**, **11/11 intensity checks**, **61/61
 adjustment pairs**, and **11/11 thumbnails**. Worst default mean ΔE2000 was **0.00052035**, worst
 default maximum **1.21046424**, worst adjustment mean **0.00044731**, and worst adjustment maximum
-**1.20630550**. Median render/readback was **31.80 ms**, median thumbnail setLut+render+readback
-**2.20 ms**, and median full-preview stock switch **29.00 ms**. The upload/diagnostic suite also
+**1.20630550**. Median render/readback was **33.05 ms**, median thumbnail setLut+render+readback
+**1.90 ms**, and median full-preview stock switch **24.40 ms**. The upload/diagnostic suite also
 passed: P versus D differed by **0 codes over 6,144 pixels**, injected zero photo/LUT uploads fell
 back to P, solid colour was exact, and photo/LUT probes were **0-code** maxima. All three
 portrait/DPR/clamped presentation cases had **0-code default-versus-FBO maxima** and exact #080808
@@ -193,8 +196,8 @@ unimplemented. `docs/LIMITATIONS.md` details this boundary and the exposure/tona
 The tiled-grid PNG layout and shader half-texel/trilinear contract are in `docs/LUT_FORMAT.md`.
 The shipped assets use **N=33** for the native look plus an **N=49** two-stop extended-range cube
 per stock, in **1,069,130 bytes (1044.1 KiB)** for the complete LUT folder including both generated
-manifests (asset budget 1,200,000 bytes). These assets are included in the **1,300,200-byte
-(1269.7 KiB) main package**, below the 2 MiB limit. Exact pixel-pooled
+manifests (asset budget 1,200,000 bytes). These assets are included in the **1,325,424-byte
+(1294.4 KiB) main package**, below the 2 MiB limit. Exact pixel-pooled
 natural-image error versus full `simulate()` is **0.2829 mean / 0.6140 p95 / 0.8296 p99 /
 1.6896 maximum dE2000**; every stock passes the mean<1.0 and p95<3.0 criteria. The camera-side
 EV and white-balance paths measure **0.1479–0.1882 mean / 0.3219–0.3966 p95 dE2000** over the

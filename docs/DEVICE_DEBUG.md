@@ -188,6 +188,82 @@ now share a fixed **16:9** centre crop: 96×54 FBO output and UV crop from
 56.25%` box. No `scaleToFill` or `aspectFit` path remains. The NumPy thumbnail reference samples the
 same UV crop under the existing ΔE limits.
 
+## Decode-crop follow-up (the "proportions are wrong" report)
+
+After the presentation fix the device reported a stable, correct-looking geometry:
+
+```text
+sourceWidth 3213 x sourceHeight 5712   == infoWidth x infoHeight, orientation 'up'
+decode canvas 720x1280, texture 720x1280
+photoRect 550x978 in a 1206x978 buffer, pixelRatio 3
+all GPU probes pass (maxDiff 0)
+```
+
+**That geometry was self-consistent but the picture was still wrong.** 3213×5712 is exactly 9:16
+(`5712 * 9 / 16 = 3213`), so the aspect was never the problem; the *content* was. The probes compare
+the GPU texture with a CPU copy of the **same decode canvas**, so a wrong decode passes them
+perfectly.
+
+### Root cause: the decode drew a magnified top-left crop
+
+`utils/photo.js::drawOriented()` used the five-argument
+`drawImage(source, 0, 0, sourceWidth, sourceHeight)` into a canvas that is only
+`size.width × size.height` (720×1280). Without an explicit destination rectangle the full-resolution
+3213×5712 source was drawn at 1:1 into the smaller canvas, so the decode canvas contained the
+**top-left 720×1280 window** of the picture — a 4.46× magnification. The letterbox rect and the
+thumbnails then faithfully showed that crop, which is why "sky, clouds, window frame and dark
+pillar" looked hugely magnified and "horizontally squashed": the 16:9 card crop was applied to an
+already-cropped texture.
+
+Fixes:
+
+- **Explicit source → destination mapping.** The nine-argument
+  `drawImage(source, 0, 0, sw, sh, 0, 0, dw, dh)` maps the complete source rectangle into a
+  uniformly scaled destination rectangle.
+- **Matrix in destination space.** The orientation matrix is built from the *scaled destination*
+  dimensions. Building it from the raw source dimensions placed rotated content outside the canvas
+  for every downscale of a 90° orientation.
+- **No stretching.** One uniform scale is used, the output aspect must match the oriented decoded
+  aspect within 1 %, and a larger mismatch throws `GEOMETRY_MISMATCH`.
+- **The decoded Image is authoritative.** `Image.naturalWidth/naturalHeight` decide the aspect and
+  output size; `getImageInfo` only feeds the EXIF decision table (documented in
+  `docs/ORIENTATION.md`).
+
+### What the probes could not see, and what sees it now
+
+The GPU probes are texture-local and cannot detect a wrong *source* mapping. Two new content-level
+checks close that gap, and both are Canvas2D-only (no framebuffer readback):
+
+1. **Whole-image content check.** A tiny direct downscale of the original Image (8×14 for a 9:16
+   photo) is compared with a downscale of the decode canvas: mean absolute difference plus the
+   four corner colours. A magnified crop differs enormously; a correct decode matches.
+2. **Canvas2D orientation self-test.** A known asymmetric synthetic source with marked corners is
+   drawn through the real `drawOriented()` path; the report states whether each marker landed in
+   the expected corner, together with the exact `drawImage` arguments, the transform matrix and
+   both scale factors.
+
+The regression is now permanent: `harness/test-photo-real.mjs` runs the production photo module in
+a real browser over 8 orientations × 4 info/Image dimension combinations × 3 output sizes and
+compares every result with an independently computed whole-image reference; a dedicated case fails
+on the old five-argument draw, and the real 3213×5712 user photo must decode to 720×1280 with the
+same content as a direct downscale.
+
+### Ruled out on the device
+
+- **Aspect/letterbox:** the photo rect (550×978 = 0.5625 = 9:16) matched the decoded texture; the
+  stage letterbox was correct.
+- **Texture upload and LUT sampling:** fixed and verified earlier; the GPU probes pass.
+- **CSS stretching:** the canvas is `100% × 100%`, the buffer is derived from the node geometry, and
+  the letterbox is produced by the GL viewport only.
+- **EXIF:** the file reports `up` and no rotation is applied.
+
+### Still device-only
+
+- Whether a specific base library applies EXIF 2–4 itself (the documented `NON_SWAP` ambiguity).
+- The raw-portrait ambiguity of rows `C`/`D` (see `docs/ORIENTATION.md`).
+- The exact re-compression of a picked file: the diagnostics now report the picker's byte size,
+  the requested `sizeType` (`original`), and bytes-per-pixel as a hint.
+
 ## How to read the next on-device report
 
 Open **关于 → 诊断**, or long-press **SPEKTRAFILM**, then use **复制**. **重新运行** repeats the suite.
@@ -206,6 +282,9 @@ text is also logged with `[wx-spektrafilm][diag]`.
 | Default and FBO samples agree but the visible canvas is black | Post-readback native compositing/surface failure; use node/CSS/buffer/viewport records |
 | `direct` fails and `pixels` passes | Confirms H1 on that host; the app should nevertheless have recovered automatically |
 | Any nonzero GL error | Its stage and texture name identify the failing operation |
+| Whole-image check shows a large mean difference | The decode canvas is a crop of the source; check the reported `drawImage` arguments and scale factors |
+| Whole-image check is clean but the picture looks wrong | The decode is complete; compare the decoded dimensions with the expected camera output and the EXIF decision row |
+| Canvas2D self-test fails | Rotation/scale/marker mapping is broken in `drawOriented()` |
 
 The report intentionally contains only tiny probe values, not photo pixels or files. It is held in
 memory for the current page process, not persisted or uploaded.

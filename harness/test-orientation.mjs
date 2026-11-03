@@ -118,6 +118,121 @@ assert.equal(square.engineApplied, false);
 assert.equal(square.transformOrientation, 'right');
 assert.throws(() => decide(1, false, 'unknown'), /Unknown EXIF orientation mode/);
 
+// --- the documented decision table ------------------------------------------
+//
+// The decoded Image is the geometry authority. getImageInfo only informs the
+// EXIF decision, and the decision row is reported in the diagnostics.
+function row(input) {
+  return decideExifOrientation(Object.assign({ mode: 'auto' }, input));
+}
+
+{
+  // A: raw landscape info + upright portrait Image -> the engine applied EXIF.
+  const a = row({
+    orientation: 'right', infoWidth: 400, infoHeight: 300,
+    decodedWidth: 300, decodedHeight: 400,
+  });
+  assert.equal(a.decisionRow, 'A');
+  assert.equal(a.engineApplied, true);
+  assert.equal(a.transformOrientation, 'up');
+  assert.equal(a.outputWidth, 300);
+  assert.equal(a.outputHeight, 400);
+  assert.equal(a.ambiguous, false);
+}
+{
+  // B: matching raw landscape dimensions -> manual transform.
+  const b = row({
+    orientation: 'right', infoWidth: 400, infoHeight: 300,
+    decodedWidth: 400, decodedHeight: 300,
+  });
+  assert.equal(b.decisionRow, 'B');
+  assert.equal(b.engineApplied, false);
+  assert.equal(b.transformOrientation, 'right');
+  assert.equal(b.outputWidth, 300);
+  assert.equal(b.outputHeight, 400);
+}
+{
+  // C: upright portrait info + raw landscape Image -> manual transform.
+  const c = row({
+    orientation: 'right', infoWidth: 300, infoHeight: 400,
+    decodedWidth: 400, decodedHeight: 300,
+  });
+  assert.equal(c.decisionRow, 'C');
+  assert.equal(c.engineApplied, false);
+  assert.equal(c.transformOrientation, 'right');
+  assert.equal(c.outputWidth, 300);
+  assert.equal(c.outputHeight, 400);
+}
+{
+  // D: matching portrait dimensions -> preserve the decoded pixels; the
+  // raw-portrait case is indistinguishable and therefore flagged ambiguous.
+  const d = row({
+    orientation: 'right', infoWidth: 300, infoHeight: 400,
+    decodedWidth: 300, decodedHeight: 400,
+  });
+  assert.equal(d.decisionRow, 'D');
+  assert.equal(d.engineApplied, true);
+  assert.equal(d.transformOrientation, 'up');
+  assert.equal(d.ambiguous, true);
+  assert.equal(d.outputWidth, 300);
+  assert.equal(d.outputHeight, 400);
+}
+{
+  // UP: 'up' never rotates, even when the info dimensions disagree.
+  const up = row({
+    orientation: 'up', infoWidth: 400, infoHeight: 300,
+    decodedWidth: 300, decodedHeight: 400,
+  });
+  assert.equal(up.decisionRow, 'UP');
+  assert.equal(up.engineApplied, false);
+  assert.equal(up.transformOrientation, 'up');
+  assert.equal(up.outputWidth, 300);
+  assert.equal(up.outputHeight, 400);
+}
+{
+  // NON_SWAP: EXIF 2-4 cannot be detected from dimensions.
+  const nonSwap = row({
+    orientation: 'down', infoWidth: 400, infoHeight: 300,
+    decodedWidth: 400, decodedHeight: 300,
+  });
+  assert.equal(nonSwap.decisionRow, 'NON_SWAP');
+  assert.equal(nonSwap.engineApplied, false);
+  assert.equal(nonSwap.ambiguous, true);
+}
+{
+  // SQUARE and UNMATCHED stay manual and are flagged.
+  const squareRow = row({
+    orientation: 'right', infoWidth: 20, infoHeight: 20,
+    decodedWidth: 20, decodedHeight: 20,
+  });
+  assert.equal(squareRow.decisionRow, 'SQUARE');
+  assert.equal(squareRow.engineApplied, false);
+  assert.equal(squareRow.ambiguous, true);
+  const unmatched = row({
+    orientation: 'right', infoWidth: 400, infoHeight: 300,
+    decodedWidth: 400, decodedHeight: 400,
+  });
+  assert.equal(unmatched.decisionRow, 'UNMATCHED');
+  assert.equal(unmatched.engineApplied, false);
+  assert.equal(unmatched.ambiguous, true);
+}
+{
+  // Explicit overrides still win, and the reason is reported.
+  const manual = decideExifOrientation({
+    orientation: 'right', infoWidth: 400, infoHeight: 300,
+    decodedWidth: 300, decodedHeight: 400, mode: 'manual',
+  });
+  assert.equal(manual.decisionRow, 'MANUAL');
+  assert.equal(manual.engineApplied, false);
+  const engine = decideExifOrientation({
+    orientation: 'right', infoWidth: 400, infoHeight: 300,
+    decodedWidth: 400, decodedHeight: 300, mode: 'engine',
+  });
+  assert.equal(engine.decisionRow, 'ENGINE');
+  assert.equal(engine.engineApplied, true);
+  assert.equal(engine.transformOrientation, 'up');
+}
+
 // The suspect-decode retry redraws from the original Image with the same
 // transform, and the caller can release that Image after the upload decision.
 {

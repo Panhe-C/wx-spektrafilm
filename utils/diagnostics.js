@@ -48,6 +48,70 @@
     lines.push(`  maxDiff=${test.maxDiff}`);
   }
 
+  function formatPhotoGeometry(report) {
+    const value = report || {};
+    const photo = value.photo || {};
+    const canvas = value.canvas || {};
+    const presentation = canvas.presentation || {};
+    const media = photo.chooseMedia || {};
+    const lines = [
+      `chooseMedia: file=${media.fileName || '-'} ext=${media.extension || '-'} ` +
+      `sizeBytes=${media.sizeBytes === null || media.sizeBytes === undefined ? '-' : media.sizeBytes} ` +
+      `fileType=${media.fileType || '-'} sizeType=${media.sizeType || '-'}`,
+      `chooseMedia dims: ${media.pickerWidth || '-'}x${media.pickerHeight || '-'} ` +
+      `thumb=${media.hasThumbTempFilePath === true} original=${media.originalPathPresent === true}`,
+      `original info: ${json(media.originalInfo || media.originalInfoError || null)}`,
+      `getImageInfo: ${photo.infoWidth || '-'}x${photo.infoHeight || '-'} ` +
+      `orientation=${photo.infoOrientation === null || photo.infoOrientation === undefined ? '-' : photo.infoOrientation} ` +
+      `type=${photo.infoType || '-'}`,
+      `decoded Image: ${photo.sourceWidth || '-'}x${photo.sourceHeight || '-'} ` +
+      `bytesPerPixel=${photo.bytesPerPixel === null || photo.bytesPerPixel === undefined ? '-' : Number(photo.bytesPerPixel).toFixed(3)}`,
+      `EXIF decision: row=${photo.decisionRow || '-'} reason=${photo.decisionReason || '-'} ` +
+      `mode=${photo.decisionMode || '-'} engineApplied=${photo.engineApplied === true} ` +
+      `transform=${photo.transformOrientation || '-'} ambiguous=${photo.ambiguousDecision === true}`,
+      `decode canvas: ${photo.decodeCanvasWidth || '-'}x${photo.decodeCanvasHeight || '-'} ` +
+      `prepared=${photo.width || '-'}x${photo.height || '-'}`,
+      `texture: ${json((photo.geometryCheck || {}))}`,
+      `drawImage: ${json(photo.draw || null)}`,
+      `scale: sx=${photo.scaleX === undefined ? '-' : photo.scaleX} ` +
+      `sy=${photo.scaleY === undefined ? '-' : photo.scaleY} ` +
+      `aspectError=${photo.relativeAspectError === undefined ? '-' : photo.relativeAspectError}`,
+      `photo rect: ${json(presentation.photoRect || null)}`,
+    ];
+    const whole = photo.wholeImageCheck;
+    if (whole && whole.available) {
+      lines.push(
+        `whole-image check: probe=${pixel(whole.probeSize)} ` +
+        `meanAbsDiff=${number(whole.meanAbsDiff, 3)} maxAbsDiff=${whole.maxAbsDiff} ` +
+        `wholeImage=${whole.wholeImage === true}`
+      );
+      (whole.corners || []).forEach((corner) => {
+        lines.push(
+          `  ${corner.name} direct=${pixel(corner.direct)} decoded=${pixel(corner.decoded)} ` +
+          `maxDiff=${corner.maxDiff}`
+        );
+      });
+    } else if (whole) {
+      lines.push(`whole-image check: unavailable ${whole.error || ''}`);
+    }
+    const selfTest = value.photoSelfTest;
+    if (selfTest && selfTest.available) {
+      lines.push(
+        `canvas2d self-test: pass=${selfTest.pass === true} ` +
+        `cases=${(selfTest.cases || []).length}`
+      );
+      (selfTest.cases || []).forEach((item) => {
+        lines.push(
+          `  ${item.orientation}: pass=${item.pass === true} maxDiff=${item.maxDiff} ` +
+          `dest=${json((item.drawInfo || {}).destinationRect || null)}`
+        );
+      });
+    } else if (selfTest) {
+      lines.push(`canvas2d self-test: unavailable ${selfTest.error || ''}`);
+    }
+    return lines;
+  }
+
   // Keep this formatter deterministic apart from values supplied in report.
   // It deliberately emits only compact probes, never full pixel arrays.
   function formatReport(report) {
@@ -91,6 +155,8 @@
       '[PHOTO SOURCE]',
       json(value.photo || { type: 'none' }),
       '',
+      '[PHOTO GEOMETRY]',
+      ...formatPhotoGeometry(value),
       '[THUMBNAIL GEOMETRY]',
       json(value.thumbnail || null),
       '',
@@ -236,6 +302,7 @@
       generatedAt: new Date().toISOString(),
       app: settings.app || {},
       photo: settings.photo || { type: 'none' },
+      photoSelfTest: settings.photoSelfTest || null,
       thumbnail: settings.thumbnail || null,
       gl: { available: false },
       canvas: {
@@ -296,6 +363,15 @@
         letterboxExact: !tests.defaultFramebuffer || !tests.defaultFramebuffer.available ||
           !tests.defaultFramebuffer.letterbox || tests.defaultFramebuffer.letterbox.exact,
         noGlErrors: (report.glErrors || []).length === 0,
+        wholeImageContent: !report.photo || !report.photo.wholeImageCheck ||
+          !report.photo.wholeImageCheck.available ||
+          report.photo.wholeImageCheck.wholeImage === true,
+        canvas2dSelfTest: !report.photoSelfTest || !report.photoSelfTest.available ||
+          report.photoSelfTest.pass === true,
+        geometryDimensions: !report.photo || !report.photo.geometryCheck ||
+          report.photo.geometryCheck.dimensionsMatch !== false,
+        geometryAspect: !report.photo || !report.photo.geometryCheck ||
+          report.photo.geometryCheck.aspectConsistent !== false,
       };
       report.summary = {
         ok: Object.keys(checks).every((key) => checks[key]),

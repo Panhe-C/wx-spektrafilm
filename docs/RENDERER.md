@@ -62,6 +62,19 @@ colour-space conversion is disabled where the host exposes that control. The ver
 for the top-row-first photo bytes; LUT V remains in native PNG row order because green increases
 down each tile.
 
+### Photo decode mapping
+
+The photo texture is the oriented, downscaled decode canvas produced by `utils/photo.js`. That
+canvas must contain the **whole** picture: the nine-argument `drawImage(source, 0, 0, sw, sh, 0, 0,
+dw, dh)` maps the complete source rectangle into a uniformly scaled destination rectangle, and the
+orientation matrix is built in that scaled destination space. The decoded Image's natural
+dimensions are the geometry authority; `getImageInfo` only informs the EXIF decision table in
+`docs/ORIENTATION.md`. A non-uniform scale or an aspect mismatch of more than 1 % is rejected with
+`GEOMETRY_MISMATCH` instead of stretching. Because the GPU probes compare the texture with a CPU
+copy of the same decode canvas, the renderer also runs a content-level whole-image check (a tiny
+direct downscale of the original Image versus a downscale of the decode canvas) and a Canvas2D
+marker self-test; both are reported by `utils/diagnostics.js`.
+
 ### Robust source upload ladder
 
 The renderer never assumes that a host Canvas2D/Image accepted by six-argument `texImage2D` actually
@@ -310,8 +323,8 @@ The final on-box full run passed **66/66 default pairs**, **11/11 intensity chec
 adjustment pairs**, and **11/11 thumbnails**. The worst default mean ΔE2000 was **0.0005203500**
 (`velvia100/p237`) and the worst default maximum was **1.2104642391** (`portra160/p1015`); the worst
 adjustment mean was **0.0004473071** and the worst adjustment maximum **1.2063055038**. Median
-render/readback time was **31.80 ms**, median thumbnail `setLut`+render+readback **2.20 ms**, and
-median full-preview stock switch **29.00 ms**. Intensity 0 was code-exact; intensity 0.5 stayed
+render/readback time was **33.05 ms**, median thumbnail `setLut`+render+readback **1.90 ms**, and
+median full-preview stock switch **24.40 ms**. Intensity 0 was code-exact; intensity 0.5 stayed
 within one code. The separate upload suite passed P/D with **0-code maximum difference over 6,144
 pixels**, recovered both injected zero uploads through P, and measured solid/photo/LUT maxima of
 **0/0/0 codes** (full-shader intensity 0: **1 code**). See `harness/out/report.md` and

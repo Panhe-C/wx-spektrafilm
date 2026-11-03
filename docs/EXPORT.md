@@ -33,7 +33,7 @@ size is 2048.
 
 ```text
 wx.getSetting / wx.authorize / wx.showModal / wx.openSetting   (permission)
-  → wx.getImageInfo                                               (original size)
+  → decode Image (natural size) + wx.getImageInfo                  (oriented size)
   → utils/export.js planExport()                                  (size + tiles)
   → utils/photo.js prepareExportImage()                           (decode + EXIF)
   → renderer.renderRegionToPixels() per tile                      (WebGL)

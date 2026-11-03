@@ -94,6 +94,15 @@
   function createExportHost(options) {
     const settings = options || {};
     const api = getWx();
+    // The decoded Image is the geometry authority, so it is decoded once and
+    // reused for the export canvas.
+    const images = Object.create(null);
+    function hostImage(src) {
+      if (!images[src]) {
+        images[src] = PhotoModule.loadCanvasImage(settings.canvas, src);
+      }
+      return images[src];
+    }
     if (!api) {
       throw new Error('The Mini Program host is not available');
     }
@@ -108,13 +117,38 @@
       },
 
       // --- picture ---------------------------------------------------------
-      getImageInfo: (src) => callWx('getImageInfo', { src }),
-      decodeImage: (request) => PhotoModule.prepareExportImage({
-        canvas: settings.canvas,
-        src: request.src,
-        width: request.width,
-        height: request.height,
-      }).then((prepared) => ({
+      // The reported size is the ORIENTED size of the decoded Image, so the
+      // export plan matches the pixels that will actually be rendered.
+      getImageInfo: async (src) => {
+        const info = await callWx('getImageInfo', { src });
+        const image = await hostImage(src);
+        const decision = PhotoModule.decideExifOrientation({
+          orientation: info.orientation,
+          infoWidth: info.width,
+          infoHeight: info.height,
+          decodedWidth: Number(image.naturalWidth || image.width),
+          decodedHeight: Number(image.naturalHeight || image.height),
+          mode: settings.orientationMode,
+        });
+        return {
+          width: decision.outputWidth,
+          height: decision.outputHeight,
+          orientation: info.orientation,
+          rawWidth: Number(info.width) || null,
+          rawHeight: Number(info.height) || null,
+          decisionRow: decision.decisionRow,
+          type: info.type || '',
+        };
+      },
+      decodeImage: (request) => hostImage(request.src).then((image) => (
+        PhotoModule.prepareExportImage({
+          canvas: settings.canvas,
+          src: request.src,
+          width: request.width,
+          height: request.height,
+          image,
+        })
+      )).then((prepared) => ({
         canvas: prepared.canvas,
         width: prepared.width,
         height: prepared.height,
@@ -159,6 +193,17 @@
             release: () => {
               renderer.clearPhoto();
               renderer.destroy();
+              Object.keys(images).forEach((key) => {
+                const entry = images[key];
+                if (entry && typeof entry.then === 'function') {
+                  entry.then((image) => {
+                    if (image) {
+                      image.src = '';
+                    }
+                  }).catch(() => null);
+                }
+                delete images[key];
+              });
             },
           };
         });
