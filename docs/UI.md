@@ -18,12 +18,13 @@ strip under it, and the extra controls live in a bottom sheet behind a toolbar b
 ├── .topbar                 相册 · 拍照 │ SPEKTRAFILM (long-press = 诊断) │ 清除 · 保存 · ⓘ(关于)
 ├── .preview-stage          flex: 1 — the ONLY flexible area. Holds
 │   ├── <canvas type="webgl">   absolute, 100% × 100%, never resized by the chrome
+│   ├── <canvas type="2d">      transparent overlay, same box, pointer-events: none — film-border decoration
 │   ├── .empty-state            icon, 「选择一张照片开始」, 从相册选择 / 拍照
 │   ├── .loading-mask / .compare-badge
 │   └── .overlays               error banner (tap to dismiss), export progress card, export error card
 ├── .dock                   fixed height
 │   ├── .strip-area             <scroll-view scroll-x> film strip (all 11 stocks, three categories in order)
-│   └── .toolbar                胶片 │ 调整 │ 效果   (+ safe-area-inset-bottom)
+│   └── .toolbar                胶片 │ 调整 │ 效果 │ 边框   (+ safe-area-inset-bottom)
 ├── .sheet                  absolute, bottom = toolbar top; overlays the strip and the lower stage
 │   ├── header                  title, 重置, 完成
 │   └── <scroll-view scroll-y>  sliders of the open tab
@@ -41,9 +42,11 @@ Nothing scrolls except the strip (horizontally) and the sheet (vertically); `dis
 | 胶片 (default) | no sheet; the film strip is the only panel |
 | 调整 | sheet with 曝光 EV, 色温, 色调, 强度, then 「后期微调（非胶片物理）」: 对比度, 饱和度 |
 | 效果 | sheet with 颗粒, 光晕, 暗角 and the note that grain/halation are approximations |
+| 边框 | short sheet with a horizontal row of film-border cards (无边框 default); see `docs/BORDER.md` |
 
 `ui.nextPanel(current, tab, hasPhoto)` is the whole state machine: tapping 调整/效果 opens it,
-tapping the open tab again collapses it, tapping the other tab switches the content, 胶片 or
+tapping the open tab again collapses it, tapping the other tab switches the content (调整, 效果
+and 边框 are the three sheet tabs), 胶片 or
 「完成」 closes it, and nothing opens without a photo (the tabs are dimmed). The sheet's 「重置」
 restores only the controls of the open tab (the six adjustments, or the three effects); it is
 disabled while they are at their defaults. `onResetAdjustments` (restore both) is still on the page
@@ -401,3 +404,8 @@ debug session). None of them is covered by the headless harness.
     note). Press-and-hold on the visible photo still shows the original.
 22. **Top bar** — 相册 / 拍照 import, 清除 appears with a photo, 保存 is dimmed without a photo and
     while exporting, ⓘ opens the about sheet, long-press on SPEKTRAFILM opens the diagnostics.
+23. **Film border** — 边框 opens a short sheet with six cards; choosing one frames the live preview
+    (the photo re-fits above the sheet, the film styles show sprocket holes and the preset name,
+    the name follows when another preset is chosen), 无边框 removes it, 「重置」 does the same, and
+    the choice survives preset changes and a new photo. The saved file carries the same frame at the
+    export resolution for portrait and landscape photos. See the checks in `docs/BORDER.md`.
