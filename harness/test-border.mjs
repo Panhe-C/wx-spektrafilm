@@ -75,8 +75,54 @@ assert.throws(() => Border.computeLayout('black', 100, NaN));
   // A panorama does not get an absurdly thick band.
   const panorama = Border.computeLayout('film35', 6000, 1000);
   assert.ok(panorama.band <= 1000 * 0.153 * 1.5 + 1);
-  const medium = Border.computeLayout('film120', 3000, 2000);
-  assert.ok(medium.band < landscape.band, 'the medium format band is thinner than the 135 band');
+}
+
+// --- 120 film: a thin, irregular black edge around the UNCROPPED photo -------
+
+{
+  assert.equal(Border.styleName('film120'), '120 胶片');
+  for (const [w, h] of [[3000, 2000], [2000, 3000], [2000, 2000], [1600, 900], [900, 1600], [6000, 1000], [1000, 6000]]) {
+    const layout = Border.computeLayout('film120', w, h);
+    const short = Math.min(w, h);
+    // No crop: the picture keeps its own size and aspect ratio.
+    assert.equal(layout.photoW, w);
+    assert.equal(layout.photoH, h);
+    assert.equal(layout.outerW, w + layout.left + layout.right);
+    assert.equal(layout.outerH, h + layout.top + layout.bottom);
+    // Thin: even the print side plus the white scan margin stays below 7 % of the short side.
+    for (const key of ['left', 'top', 'right', 'bottom']) {
+      assert.ok(layout[key] / short < 0.07, `${w}x${h} ${key} is thin`);
+      assert.ok(layout[key] >= 1);
+    }
+    // The print side is the long side of the strip: top for landscape, left for portrait and square.
+    const side = w > h ? 'top' : 'left';
+    assert.equal(layout.film.print, side);
+    const others = ['left', 'top', 'right', 'bottom'].filter((key) => key !== side);
+    others.forEach((key) => {
+      assert.ok(layout.film.black[side] > layout.film.black[key] * 1.8, `${w}x${h}: the ${side} band is the wide one`);
+    });
+    // The rebate is irregular: no two sides share a width and the corners are nudged.
+    const widths = ['left', 'top', 'right', 'bottom'].map((key) => layout.film.black[key]);
+    assert.equal(new Set(widths.map((v) => v.toFixed(3))).size, 4);
+    assert.ok(layout.film.corners.some(([x, y]) => x !== 0 || y !== 0));
+    // The nudge never eats the thinnest rebate.
+    const jitter = Math.max(...layout.film.corners.flat().map(Math.abs));
+    assert.ok(jitter < Math.min(...widths), `${w}x${h}: the corner nudge stays inside the rebate`);
+    // Deterministic: the same call, the same frame.
+    assert.deepEqual(Border.computeLayout('film120', w, h), layout);
+  }
+  // The irregularity is a fixed pattern in units of the photo: the preview matches the export.
+  const big = Border.computeLayout('film120', 4000, 3000);
+  const small = Border.computeLayout('film120', 1000, 750);
+  for (const key of ['left', 'top', 'right', 'bottom']) {
+    assert.ok(Math.abs(big.film.black[key] / 4 - small.film.black[key]) < 1e-9);
+    assert.ok(Math.abs(big.film.white[key] / 4 - small.film.white[key]) < 1e-9);
+  }
+  assert.ok(Border.isMonochrome('Ilford HP5 Plus'));
+  assert.ok(Border.isMonochrome('Kodak Tri-X 400'));
+  assert.ok(Border.isMonochrome('黑白'));
+  assert.ok(!Border.isMonochrome('Kodak Portra 400'));
+  assert.ok(!Border.isMonochrome(''));
 }
 
 // A layout scales linearly with the picture, so the preview layout is the
@@ -341,10 +387,55 @@ for (const id of Border.STYLE_IDS) {
   assert.ok(name.text.length * size * 0.6 <= long.layout.photoW * 0.62 + 1);
 }
 {
-  const { context } = paint('film120', 3000, 2000);
+  const landscape = paint('film120', 3000, 2000, { stockName: 'Kodak Portra 400' });
+  const { layout, context } = landscape;
   assert.ok(!context.calls.some((call) => call.op === 'fill' && call.fill === Border.SPROCKET_COLOR),
     'medium format has no sprocket holes');
-  assert.ok(context.calls.some((call) => call.op === 'fillText'));
+  // The white scan margin: the frame rectangle with the black strip cut out.
+  const margin = context.calls.filter((call) => call.op === 'fill' && call.fill === Border.SCAN_MARGIN_COLOR);
+  assert.equal(margin.length, 1);
+  assert.ok(margin[0].points.length >= 8, 'the margin path has an outer rectangle and a hole');
+  const black = context.calls.filter((call) => call.op === 'fillRect' && call.fill === layout.color);
+  assert.equal(black.length, 4, 'the rebate is first painted as four rectangles around the photo');
+  // The edge print: capitals, in the band above a landscape photo, left to right.
+  const texts = context.calls.filter((call) => call.op === 'fillText');
+  assert.deepEqual(texts.map((call) => call.text), ['KODAK PORTRA 400', '7', '7A']);
+  assert.ok(texts.every((call) => call.fill === Border.EDGE_PRINT_COLOR));
+  texts.forEach((call) => {
+    assert.ok(call.point[1] < layout.top, 'the print sits in the top band');
+    assert.ok(call.point[1] > layout.top - layout.film.black.top, 'and inside the black');
+  });
+  assert.ok(texts[0].point[0] < texts[1].point[0] && texts[1].point[0] < texts[2].point[0]);
+  // The slight orange light bleed is plain filled slivers in the band.
+  const fringe = context.calls.filter((call) => call.op === 'fill' && /255, 140, 50/.test(call.fill));
+  assert.ok(fringe.length >= 3);
+  // A black-and-white stock prints light grey, not amber.
+  const mono = paint('film120', 3000, 2000, { stockName: 'Kodak Tri-X 400' });
+  const monoTexts = mono.context.calls.filter((call) => call.op === 'fillText');
+  assert.ok(monoTexts.length === 3 && monoTexts.every((call) => call.fill === Border.MONO_PRINT_COLOR));
+  assert.ok(mono.context.calls.some((call) => call.op === 'fill' && call.fill === 'rgba(255, 255, 255, 0.2)'));
+  // The explicit flag wins over the guess.
+  const forced = paint('film120', 3000, 2000, { stockName: 'Kodak Portra 400', monochrome: true });
+  assert.ok(forced.context.calls.filter((call) => call.op === 'fillText').every((call) => call.fill === Border.MONO_PRINT_COLOR));
+  // The print is squeezed horizontally: the baseline is rotated for portrait, the glyphs never leave the band.
+  const portrait = paint('film120', 2000, 3000, { stockName: 'Kodak Portra 400' });
+  const portraitTexts = portrait.context.calls.filter((call) => call.op === 'fillText');
+  assert.equal(portraitTexts.length, 3);
+  portraitTexts.forEach((call) => {
+    assert.ok(call.point[0] < portrait.layout.left && call.point[0] > portrait.layout.left - portrait.layout.film.black.left);
+  });
+  // It reads bottom to top: the name starts below the numbers.
+  assert.ok(portraitTexts[0].point[1] > portraitTexts[1].point[1] && portraitTexts[1].point[1] > portraitTexts[2].point[1]);
+  // A square picture prints on the left like a portrait one.
+  const square = paint('film120', 2000, 2000, { stockName: 'Kodak Portra 400' });
+  assert.ok(square.context.calls.filter((call) => call.op === 'fillText').every((call) => call.point[0] < square.layout.left));
+  // An overlong name is shrunk, not cut.
+  const long = paint('film120', 3000, 2000, { stockName: 'An extremely long film stock name that would never fit the strip' });
+  const longName = long.context.calls.find((call) => call.op === 'fillText' && call.text.length > 20);
+  const size = parseFloat(/(\d+(\.\d+)?)px/.exec(longName.font)[1]);
+  assert.ok(longName.text.length * size * 0.6 * 0.8 <= long.layout.photoW * 0.42 + 1);
+  // Without a name only the numbers are printed.
+  assert.deepEqual(paint('film120', 3000, 2000, {}).context.calls.filter((call) => call.op === 'fillText').map((call) => call.text), ['7', '7A']);
   const polaroid = paint('polaroid', 3000, 2000);
   assert.ok(polaroid.context.calls.some((call) => call.op === 'strokeRect'));
 }

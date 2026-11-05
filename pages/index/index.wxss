@@ -609,6 +609,10 @@
   height: 100%;
 }
 
+.border-ring {
+  position: absolute;
+}
+
 .border-holes {
   position: absolute;
   right: 0;

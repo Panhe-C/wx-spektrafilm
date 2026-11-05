@@ -75,12 +75,19 @@ function buildBorderCards() {
       id: entry.id,
       name: entry.name,
       boxStyle: `width: ${width.toFixed(1)}rpx; height: ${height.toFixed(1)}rpx; ` +
-        `background-color: ${entry.id === Border.NONE ? 'transparent' : geometry.color};`,
+        `background-color: ${entry.id === Border.NONE ? 'transparent' : (geometry.outerColor || geometry.color)};`,
       photoStyle: `left: ${percent(geometry.left)}; right: ${percent(geometry.right)}; ` +
         `top: ${percent(geometry.top)}; bottom: ${percent(geometry.bottom)};`,
       holes: entry.id === 'film35',
       holesTopStyle: '',
       holesBottomStyle: '',
+      // The 120 film card: a black rebate inside the white scan margin.
+      ring: !!geometry.ring,
+      ringStyle: geometry.ring
+        ? `left: ${percent(geometry.ring.left)}; right: ${percent(geometry.ring.right)}; ` +
+          `top: ${percent(geometry.ring.top)}; bottom: ${percent(geometry.ring.bottom)}; ` +
+          `background-color: ${geometry.color};`
+        : '',
     };
     if (card.holes) {
       // Sprocket holes: a repeating gradient in the bands, in card pixels.

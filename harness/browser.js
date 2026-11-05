@@ -68,23 +68,35 @@
 
   // Load the picture at an exact size (the export test needs a fixed
   // 3000x2000 canvas).
-  async function loadPhotoSized(photo, width, height) {
+  async function loadPhotoSized(photo, width, height, cover) {
     if (photoBitmap) {
       photoBitmap.close();
       photoBitmap = null;
     }
     photoBitmap = await decode(`/testphotos/${photo}.jpg`);
-    return installPhoto(width, height);
+    return installPhoto(width, height, cover);
   }
 
-  function installPhoto(width, height) {
+  // `cover` centre-crops the source to the target aspect ratio instead of
+  // stretching it (only used to prepare odd-ratio sample photos).
+  function installPhoto(width, height, cover) {
     inputCanvas = document.createElement('canvas');
     inputCanvas.width = width;
     inputCanvas.height = height;
     const context = inputCanvas.getContext('2d', { alpha: false });
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = 'high';
-    context.drawImage(photoBitmap, 0, 0, width, height);
+    if (cover) {
+      const scale = Math.max(width / photoBitmap.width, height / photoBitmap.height);
+      const sw = width / scale;
+      const sh = height / scale;
+      context.drawImage(
+        photoBitmap, (photoBitmap.width - sw) / 2, (photoBitmap.height - sh) / 2, sw, sh,
+        0, 0, width, height
+      );
+    } else {
+      context.drawImage(photoBitmap, 0, 0, width, height);
+    }
     renderer.resize(width, height);
     renderer.setPhoto(inputCanvas);
     renderer.setAdjustments(DEFAULTS);

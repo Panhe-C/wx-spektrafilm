@@ -32,7 +32,7 @@
     Object.freeze({ id: 'polaroid', name: '拍立得' }),
     Object.freeze({ id: 'black', name: '黑边' }),
     Object.freeze({ id: 'film35', name: '35mm 胶片' }),
-    Object.freeze({ id: 'film120', name: '中画幅' }),
+    Object.freeze({ id: 'film120', name: '120 胶片' }),
   ]);
   const STYLE_IDS = Object.freeze(STYLES.map((style) => style.id));
 
@@ -41,7 +41,8 @@
     polaroid: '#f4f1e8',
     black: '#000000',
     film35: '#0c0b0a',
-    film120: '#0a0a0a',
+    // The thin black rebate; the white scan margin outside it is painted on top.
+    film120: '#050505',
   });
   // Orange-yellow edge imprint of a developed colour negative.
   const EDGE_PRINT_COLOR = '#f2a03a';
@@ -59,8 +60,26 @@
   const SPROCKET_PITCH = 0.864;
   const SPROCKET_INSET = 0.17;
   const SPROCKET_RADIUS = 0.08;
-  const FILM120_BAND = 0.07;
-  const FILM120_SIDE = 0.04;
+
+  // 120 film, scanned with its rebate ("带片边扫描"): the photo keeps its own
+  // aspect ratio and is wrapped by a thin, slightly irregular black film edge,
+  // wider on the side that carries the edge print, then a thin white scan
+  // margin. Everything is a fraction of the SHORT side of the photo, and the
+  // irregularity comes from a fixed seed, so the preview and the export draw
+  // the very same frame.
+  const FILM120_SEED = 9;
+  const FILM120_PRINT_BAND = 0.034;
+  const FILM120_MARGIN = 0.016;
+  const FILM120_RADIUS = 0.011;
+  const FILM120_JITTER = 0.005;
+  const FILM120_FRAME_NUMBER = 7;
+  // The scanner margin and the printed ink of a black-and-white stock.
+  const SCAN_MARGIN_COLOR = '#fcfbf8';
+  const MONO_PRINT_COLOR = '#e8e8e2';
+  const FILM120_FRINGE = 'rgba(255, 140, 50, 0.55)';
+  const FILM120_FRINGE_MONO = 'rgba(255, 255, 255, 0.2)';
+  const PRINT_SQUEEZE = 0.8;
+  const MONO_NAME = /(tri-?x|hp5|fp4|delta|t-?max|tmax|acros|neopan|plus-?x|pan\s?f|ilford|b\s?&\s?w|\bbw\b|mono|black\s+and\s+white|黑白)/i;
 
   function normalizeStyle(value) {
     return STYLE_IDS.indexOf(value) === -1 ? NONE : value;
@@ -82,6 +101,70 @@
   // Margins are at least one pixel so that a tiny picture still shows a frame.
   function margin(fraction, basis) {
     return Math.max(1, Math.round(fraction * basis));
+  }
+
+  // mulberry32: a tiny deterministic generator, so a "random" frame is the same
+  // in the preview, in the export and on every device.
+  function seededRandom(seed) {
+    let state = seed >>> 0;
+    return function next() {
+      state = (state + 0x6D2B79F5) | 0;
+      let t = Math.imul(state ^ (state >>> 15), 1 | state);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /**
+   * The geometry of the 120 film edge for a picture whose short side is
+   * `short` pixels. All numbers are floats in picture pixels: the widths of the
+   * black rebate per side, the white scan margin per side, and the offsets of
+   * the four outer corners of the black strip (so it is not quite parallel to
+   * the picture). The print side is the long side of the film strip: left for
+   * a portrait or square picture, top for a landscape one.
+   */
+  function film120Geometry(horizontal, short) {
+    const random = seededRandom(FILM120_SEED);
+    const r = [];
+    for (let index = 0; index < 24; index += 1) {
+      r.push(random());
+    }
+    const wide = FILM120_PRINT_BAND * short;
+    const black = horizontal
+      ? {
+        top: wide * (0.96 + 0.08 * r[0]),
+        left: 0.008 * short * (0.8 + 0.5 * r[1]),
+        right: 0.0125 * short * (0.8 + 0.5 * r[2]),
+        bottom: (0.011 * (0.8 + 0.5 * r[3]) + 0.003) * short,
+      }
+      : {
+        left: wide * (0.96 + 0.08 * r[0]),
+        right: 0.012 * short * (0.8 + 0.5 * r[1]),
+        top: 0.0075 * short * (0.8 + 0.5 * r[2]),
+        bottom: 0.011 * short * (0.8 + 0.5 * r[3]),
+      };
+    const m0 = FILM120_MARGIN * short;
+    const white = {
+      left: m0 * (1 + 0.9 * r[4]),
+      top: m0 * (0.6 + 0.9 * r[5]),
+      right: m0 * (0.5 + 0.7 * r[6]),
+      bottom: m0 * (0.9 + r[7]),
+    };
+    const corners = [];
+    for (let index = 0; index < 4; index += 1) {
+      corners.push([
+        (r[8 + index * 2] - 0.5) * FILM120_JITTER * short,
+        (r[9 + index * 2] - 0.5) * FILM120_JITTER * short,
+      ]);
+    }
+    return {
+      print: horizontal ? 'top' : 'left',
+      wide,
+      black,
+      white,
+      corners,
+      radius: FILM120_RADIUS * short,
+    };
   }
 
   /**
@@ -135,10 +218,9 @@
         Object.assign(layout, { left: edge, top: edge, right: edge, bottom: edge });
         break;
       }
-      case 'film35':
-      case 'film120': {
-        const band = margin(style === 'film35' ? FILM35_BAND : FILM120_BAND, filmBasis);
-        const side = margin(style === 'film35' ? FILM35_SIDE : FILM120_SIDE, long);
+      case 'film35': {
+        const band = margin(FILM35_BAND, filmBasis);
+        const side = margin(FILM35_SIDE, long);
         layout.band = band;
         layout.side = side;
         // The strip runs along the long edge: bands on the long sides.
@@ -147,6 +229,19 @@
         } else {
           Object.assign(layout, { left: band, right: band, top: side, bottom: side });
         }
+        break;
+      }
+      case 'film120': {
+        const film = film120Geometry(width > height, short);
+        const total = (key) => Math.max(1, Math.round(film.white[key] + film.black[key]));
+        Object.assign(layout, {
+          left: total('left'),
+          top: total('top'),
+          right: total('right'),
+          bottom: total('bottom'),
+          band: Math.round(film.wide),
+          film,
+        });
         break;
       }
       default:
@@ -185,6 +280,28 @@
     return { layout, photoW: width, photoH: height };
   }
 
+  // The black widths of the 120 edge, clamped so that a tiny picture, whose
+  // margins are rounded to whole pixels, keeps a sliver of white scan margin.
+  function film120Blacks(layout) {
+    const black = layout.film.black;
+    return {
+      left: Math.min(black.left, layout.left * 0.9),
+      top: Math.min(black.top, layout.top * 0.9),
+      right: Math.min(black.right, layout.right * 0.9),
+      bottom: Math.min(black.bottom, layout.bottom * 0.9),
+    };
+  }
+
+  // The width of the white scan margin on one side of the picture.
+  function film120Edge(layout, side) {
+    return layout[side] - film120Blacks(layout)[side];
+  }
+
+  // Is this stock a black-and-white one? Its edge print is light, not amber.
+  function isMonochrome(stockName) {
+    return MONO_NAME.test(String(stockName || ''));
+  }
+
   /**
    * CSS-free miniature of a style for the picker: the frame boxes as
    * fractions (0..1) of a sample picture's outer size.
@@ -200,6 +317,15 @@
       bottom: layout.bottom / layout.outerH,
       color: layout.color,
       orientation: layout.orientation,
+      // Styles with a second colour (the 120 film edge: black rebate inside a
+      // white scan margin) describe it as the box of the inner colour.
+      outerColor: layout.film ? SCAN_MARGIN_COLOR : '',
+      ring: layout.film ? {
+        left: film120Edge(layout, 'left') / layout.outerW,
+        right: film120Edge(layout, 'right') / layout.outerW,
+        top: film120Edge(layout, 'top') / layout.outerH,
+        bottom: film120Edge(layout, 'bottom') / layout.outerH,
+      } : null,
     };
   }
 
@@ -334,13 +460,135 @@
     });
   }
 
+  // A rounded polygon through four points, each corner with its own radius.
+  // The points run around the shape; arcTo rounds the corner at the first
+  // point of every call.
+  function roundedQuad(ctx, points, radii) {
+    const count = points.length;
+    const mid = [
+      (points[0][0] + points[1][0]) / 2,
+      (points[0][1] + points[1][1]) / 2,
+    ];
+    ctx.moveTo(mid[0], mid[1]);
+    for (let index = 1; index <= count; index += 1) {
+      const corner = points[index % count];
+      const next = points[(index + 1) % count];
+      ctx.arcTo(corner[0], corner[1], next[0], next[1], radii[index % count]);
+    }
+    ctx.closePath();
+  }
+
+  // A thin slanted sliver along an edge of the black strip: the orange light
+  // bleed at the film edge. `from`/`to` are along the edge, `inward` is the
+  // unit step into the black.
+  function fringe(ctx, a, b, inward, thickness) {
+    ctx.beginPath();
+    ctx.moveTo(a[0], a[1]);
+    ctx.lineTo(b[0], b[1]);
+    ctx.lineTo(b[0] + inward[0] * thickness, b[1] + inward[1] * thickness);
+    ctx.lineTo(a[0] + inward[0] * thickness, a[1] + inward[1] * thickness);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function lerp(a, b, t) {
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  }
+
+  // The print of one 120 film: the stock name, the frame arrow with its number
+  // and the half-frame number, in a condensed look (the Mini Program canvas
+  // has no condensed font, so a bold sans is squeezed horizontally). It runs
+  // along the wide black band: left to right on top of a landscape picture,
+  // bottom to top on the left of a portrait one.
+  function drawFilm120Print(ctx, layout, blacks, options) {
+    const film = layout.film;
+    const vertical = film.print === 'left';
+    const length = vertical ? layout.photoH : layout.photoW;
+    const fontSize = film.wide * 0.5;
+    const number = String(options.frameNumber === undefined ? FILM120_FRAME_NUMBER : options.frameNumber);
+    const mono = options.monochrome === undefined ? isMonochrome(options.stockName) : !!options.monochrome;
+    const text = options.stockName ? String(options.stockName).toUpperCase() : '';
+    ctx.save();
+    try {
+      ctx.fillStyle = mono ? MONO_PRINT_COLOR : EDGE_PRINT_COLOR;
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'left';
+      // The origin of the print: the centre of the band, at the start of the
+      // strip direction.
+      if (vertical) {
+        ctx.translate(layout.left - blacks.left / 2, layout.top + layout.photoH);
+        ctx.rotate(-Math.PI / 2);
+      } else {
+        ctx.translate(layout.left, layout.top - blacks.top / 2);
+      }
+      ctx.scale(PRINT_SQUEEZE, 1);
+      // From here on x runs along the strip in squeezed units.
+      const unit = (fraction) => (fraction * length) / PRINT_SQUEEZE;
+      const arrow = fontSize * 0.8;
+      if (text) {
+        ctx.font = `bold ${fontSize}px ${EDGE_FONT}`;
+        const room = (length * 0.42) / PRINT_SQUEEZE;
+        const width = ctx.measureText(text).width;
+        const size = width > room && width > 0 ? Math.max(1, fontSize * (room / width)) : fontSize;
+        ctx.font = `bold ${size}px ${EDGE_FONT}`;
+        ctx.fillText(text, unit(0.07), 0);
+      }
+      ctx.font = `bold ${fontSize}px ${EDGE_FONT}`;
+      drawArrow(ctx, unit(0.52), 0, arrow);
+      ctx.fillText(number, unit(0.52) + arrow * 1.6, 0);
+      ctx.fillText(`${number}A`, unit(0.86), 0);
+    } finally {
+      ctx.restore();
+    }
+  }
+
   function drawFilm120(ctx, layout, options) {
-    withStrip(ctx, layout, (geometry) => {
-      const band = geometry.band;
-      const fontSize = band * 0.34;
-      drawEdgePrint(ctx, geometry, 'top', band * 0.5, fontSize, options);
-      drawEdgePrint(ctx, geometry, 'bottom', geometry.across - band * 0.5, fontSize, options);
+    const film = layout.film;
+    const blacks = film120Blacks(layout);
+    const right = layout.left + layout.photoW;
+    const bottom = layout.top + layout.photoH;
+    // Outer corners of the black strip, each nudged a little (a film that sits
+    // slightly crooked in its holder), clockwise from the top left.
+    const corners = [
+      [layout.left - blacks.left, layout.top - blacks.top],
+      [right + blacks.right, layout.top - blacks.top],
+      [right + blacks.right, bottom + blacks.bottom],
+      [layout.left - blacks.left, bottom + blacks.bottom],
+    ].map((point, index) => [point[0] + film.corners[index][0], point[1] + film.corners[index][1]]);
+    // The outer corners are rounded, but never so much that the corner of the
+    // picture itself would fall outside the strip.
+    const radii = corners.map((corner, index) => {
+      const dx = index === 0 || index === 3 ? blacks.left : blacks.right;
+      const dy = index < 2 ? blacks.top : blacks.bottom;
+      return Math.max(0.5, Math.min(film.radius, dx * 0.9, dy * 0.9));
     });
+    // The white scan margin: the frame rectangle with the black strip cut out
+    // (the strip runs the other way round, so it is a hole under the non-zero
+    // rule). The picture lies inside the strip and is never touched.
+    ctx.fillStyle = SCAN_MARGIN_COLOR;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(layout.outerW, 0);
+    ctx.lineTo(layout.outerW, layout.outerH);
+    ctx.lineTo(0, layout.outerH);
+    ctx.closePath();
+    const reversed = [corners[0], corners[3], corners[2], corners[1]];
+    roundedQuad(ctx, reversed, [radii[0], radii[3], radii[2], radii[1]]);
+    ctx.fill();
+    // The orange fringe along the outer edge of the black strip.
+    const mono = options.monochrome === undefined ? isMonochrome(options.stockName) : !!options.monochrome;
+    ctx.fillStyle = mono ? FILM120_FRINGE_MONO : FILM120_FRINGE;
+    const thickness = Math.max(1, Math.min(layout.photoW, layout.photoH) * 0.0016);
+    const topEdge = (from, to) => fringe(
+      ctx, lerp(corners[0], corners[1], from), lerp(corners[0], corners[1], to), [0, 1], thickness
+    );
+    const leftEdge = (from, to) => fringe(
+      ctx, lerp(corners[0], corners[3], from), lerp(corners[0], corners[3], to), [1, 0], thickness
+    );
+    topEdge(0.06, 0.38);
+    topEdge(0.52, 0.6);
+    leftEdge(0.1, 0.27);
+    drawFilm120Print(ctx, layout, blacks, options);
   }
 
   function drawPolaroidEdge(ctx, layout) {
@@ -362,7 +610,9 @@
    * context for a smaller preview). The photo rectangle is left untouched.
    *
    * options.stockName: the preset name printed on the film edge.
-   * options.frameNumber: the printed frame number (default 12).
+   * options.frameNumber: the printed frame number (default 12; 7 on 120 film).
+   * options.monochrome: print the 120 edge in light grey (default: guessed
+   * from the stock name).
    */
   function drawBorder(ctx, layout, options) {
     if (!layout || layout.style === NONE) {
@@ -391,6 +641,9 @@
     COLORS,
     EDGE_PRINT_COLOR,
     SPROCKET_COLOR,
+    SCAN_MARGIN_COLOR,
+    MONO_PRINT_COLOR,
+    isMonochrome,
     normalizeStyle,
     styleName,
     computeLayout,

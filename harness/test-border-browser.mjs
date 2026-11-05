@@ -20,13 +20,17 @@ const STYLES = ['none', 'thin-white', 'polaroid', 'black', 'film35', 'film120'];
 const CASES = [
   { key: 'landscape', photo: 'p1015', width: 1600, height: 1067, stock: 'portra400' },
   { key: 'portrait', photo: 'user-9x16-window', width: 1080, height: 1920, stock: 'vision3_500t' },
+  // Odd aspect ratios: nothing is cropped, whatever the ratio.
+  { key: 'wide', photo: 'p1015', width: 1600, height: 900, stock: 'portra400', cover: true },
+  { key: 'square', photo: 'p1015', width: 1200, height: 1200, stock: 'portra400', cover: true },
 ];
 const COLORS = {
   'thin-white': [255, 255, 255],
   polaroid: [244, 241, 232],
   black: [0, 0, 0],
   film35: [12, 11, 10],
-  film120: [10, 10, 10],
+  // The corner of the file is the white scan margin; the rebate inside is near black.
+  film120: [252, 251, 248],
 };
 
 function writeDataUrl(filename, dataUrl) {
@@ -66,7 +70,7 @@ async function main() {
 
     for (const entry of CASES) {
       await page.evaluate(
-        ({ photo, width, height }) => window.spektrafilmHarness.loadPhotoSized(photo, width, height),
+        ({ photo, width, height, cover }) => window.spektrafilmHarness.loadPhotoSized(photo, width, height, cover),
         entry
       );
       let baseline = null;

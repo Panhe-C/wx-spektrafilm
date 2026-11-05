@@ -90,7 +90,7 @@ AppID, privacy authorisation, review materials, device tests).
 
 The 「边框」 tab frames the picture with a thin white border, a Polaroid-style white border, a black
 border, a 35mm film strip (sprocket holes, orange edge print with the current preset's name, frame
-number and arrows) or a medium-format frame. The border is composited **after** the film look and is
+number and arrows) or a 120 film frame (a thin irregular black film edge around the uncropped photo with the preset name in amber). The border is composited **after** the film look and is
 never graded or grained; it is visible in the live preview and baked into the saved file (the framed
 file stays within the 4096 px long edge). It is plain Canvas 2D drawing on-device. Details and the
 real-device checklist: `docs/BORDER.md`.

@@ -187,6 +187,7 @@
         >
           <view class="border-slot">
             <view class="border-thumb" style="{{item.boxStyle}}">
+              <view wx:if="{{item.ring}}" class="border-ring" style="{{item.ringStyle}}"></view>
               <view wx:if="{{item.holes}}" class="border-holes" style="{{item.holesTopStyle}}"></view>
               <view wx:if="{{item.holes}}" class="border-holes" style="{{item.holesBottomStyle}}"></view>
               <view class="border-photo" style="{{item.photoStyle}}">
