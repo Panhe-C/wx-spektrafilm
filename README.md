@@ -86,6 +86,15 @@ budget. `docs/PRIVACY.md` documents the privacy authorisation, the console confi
 diagnostics of a failed export. `docs/RELEASE_TODO.md` lists what a release still needs (real
 AppID, privacy authorisation, review materials, device tests).
 
+## Film borders (胶片边框)
+
+The 「边框」 tab frames the picture with a thin white border, a Polaroid-style white border, a black
+border, a 35mm film strip (sprocket holes, orange edge print with the current preset's name, frame
+number and arrows) or a 120 film frame (a thin irregular black film edge around the uncropped photo with the preset name in amber) or one of four irregular film edges (thin black, black, thin white, white: a thin, uneven band with a slightly crooked outline right at the photo's edge). The border is composited **after** the film look and is
+never graded or grained; it is visible in the live preview and baked into the saved file (the framed
+file stays within the 4096 px long edge). It is plain Canvas 2D drawing on-device. Details and the
+real-device checklist: `docs/BORDER.md`.
+
 ## Adjustments (physics and model)
 
 The renderer exposes a verified adjustment path: camera-side exposure EV (−2…+2), white balance
@@ -169,6 +178,11 @@ portrait/DPR/clamped presentation cases had **0-code default-versus-FBO maxima**
 letterboxes. The generated `harness/out/report.md`
 contains the per-stock and per-photo tables. These are headless measurements, not phone timings.
 
+The border suites (`harness/test-border.mjs`, `harness/test-border-browser.mjs`) check the layout
+for portrait/landscape/square/panorama pictures, the export plan within 4096 px, the preview
+rectangles, the painter geometry, and — in Chrome with the real renderer — that the framed export
+leaves the graded picture bit-identical and covers every other pixel of the file.
+
 The effect suite (identity at strength 0, determinism, scale invariance, the NumPy mirror, the
 halation profile, the halation orientation) and the export suite (the tile planner, the album
 permission flow with a mock `wx`, and the tiled render versus the single-pass render at
@@ -178,7 +192,7 @@ permission flow with a mock `wx`, and the tiled render versus the single-pass re
 
 - `app.js`, `app.json`, `app.wxss` — Mini Program entry
 - `pages/` — native picker, preset picker, adjustments panel and about page
-- `utils/`, `renderer/` — shared WebGL renderer, robust P/D uploads, diagnostics, adjustment mapping, spatial-effect model, UI state policy, thumbnail export, generated GLSL module, photo preparation, export planner and WeChat export host, fallback stub
+- `utils/`, `renderer/` — shared WebGL renderer, film-border layout and painter (`utils/border.js`), robust P/D uploads, diagnostics, adjustment mapping, spatial-effect model, UI state policy, thumbnail export, generated GLSL module, photo preparation, export planner and WeChat export host, fallback stub
 - `shaders/` — canonical WebGL1 GLSL sources shared with the headless harness
 - `subpackages/luts/` — main-package LUT PNGs plus generated, synchronized `luts.js` / `luts.json` manifests
 - `harness/` — Puppeteer/Chrome and NumPy numerical verification (not shipped in the app)

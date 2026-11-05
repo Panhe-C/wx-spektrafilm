@@ -41,6 +41,8 @@
       class="preview-canvas"
       style="{{canvasStyle}}"
     ></canvas>
+    <!-- Transparent 2D overlay: film-border decoration above the preview. -->
+    <canvas id="frameCanvas" type="2d" class="frame-canvas"></canvas>
 
     <view wx:if="{{!hasPhoto}}" class="empty-state">
       <view class="empty-icon">▦</view>
@@ -155,7 +157,7 @@
   </view>
 
   <!-- Bottom sheet over the lower part of the stage (the canvas stays put). -->
-  <view wx:if="{{panel}}" id="editSheet" class="sheet">
+  <view wx:if="{{panel}}" id="editSheet" class="sheet {{panel === 'border' ? 'sheet-compact' : ''}}">
     <view class="sheet-header">
       <text class="sheet-title">{{sheetTitle}}</text>
       <view class="sheet-header-actions">
@@ -167,7 +169,42 @@
         <view class="sheet-close" hover-class="top-hover" bindtap="onCloseSheet">完成</view>
       </view>
     </view>
-    <scroll-view class="sheet-scroll" scroll-y enhanced show-scrollbar="{{false}}">
+    <!-- Border styles: a horizontal strip of framed miniatures of the photo. -->
+    <scroll-view
+      wx:if="{{panel === 'border'}}"
+      class="border-scroll"
+      scroll-x
+      enhanced
+      show-scrollbar="{{false}}"
+    >
+      <view class="border-inner">
+        <view
+          wx:for="{{borderStyles}}"
+          wx:key="id"
+          class="border-item {{borderStyle === item.id ? 'border-selected' : ''}}"
+          data-id="{{item.id}}"
+          bindtap="onBorderTap"
+        >
+          <view class="border-slot">
+            <view class="border-thumb" style="{{item.boxStyle}}">
+              <view wx:if="{{item.ring}}" class="border-ring" style="{{item.ringStyle}}"></view>
+              <view wx:if="{{item.holes}}" class="border-holes" style="{{item.holesTopStyle}}"></view>
+              <view wx:if="{{item.holes}}" class="border-holes" style="{{item.holesBottomStyle}}"></view>
+              <view class="border-photo" style="{{item.photoStyle}}">
+                <image
+                  wx:if="{{borderThumbSrc}}"
+                  class="border-photo-image"
+                  src="{{borderThumbSrc}}"
+                  mode="aspectFill"
+                ></image>
+              </view>
+            </view>
+          </view>
+          <view class="border-name">{{item.name}}</view>
+        </view>
+      </view>
+    </scroll-view>
+    <scroll-view wx:else class="sheet-scroll" scroll-y enhanced show-scrollbar="{{false}}">
       <view class="sheet-body">
         <block wx:if="{{panel === 'adjust'}}">
           <view
@@ -227,6 +264,7 @@
         </block>
       </view>
     </scroll-view>
+    <view wx:if="{{panel === 'border'}}" class="border-note">边框加在胶片效果之后，不参与调色与颗粒；保存时按导出分辨率合成，长边最大 4096 px。</view>
   </view>
 
   <!-- About: attribution, licence, version, diagnostics, privacy guide. -->

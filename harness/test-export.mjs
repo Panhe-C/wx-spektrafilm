@@ -298,6 +298,7 @@ function createMockHost(options) {
   const api = createMockWx(settings.wx || {});
   const host = {
     events,
+    tiles: [],
     timeouts: settings.timeouts || FAST_TIMEOUTS,
     permission: api,
     getImageInfo: async () => {
@@ -328,8 +329,12 @@ function createMockHost(options) {
       events.push(`canvas:${width}x${height}`);
       return { id: 'assembly' };
     },
+    drawBorder: (canvas, layout, borderOptions) => {
+      events.push(`border:${layout.style}:${borderOptions.stockName}`);
+    },
     drawTile: (canvas, tile) => {
       events.push(`draw:${tile.index}`);
+      host.tiles.push({ x: tile.x, y: tile.y, width: tile.width, height: tile.height });
     },
     encode: async () => {
       events.push('encode');
@@ -569,6 +574,63 @@ await permissionCase(
   assert.ok(steps.length > 0);
   assert.ok(steps.some((entry) => entry.step === 'privacy'));
   assert.ok(steps.some((entry) => entry.step === 'save' && entry.phase === 'ok'));
+}
+
+{
+  // A border: the assembly canvas is the framed size, the frame is painted
+  // before the first tile, and every tile is blitted inside the margins.
+  const host = createMockHost({ wx: { authSetting: { 'scope.writePhotosAlbum': true } } });
+  const result = await Export.exportImage(exportOptions(host, {
+    border: 'polaroid',
+    stockName: 'Kodak Portra 400',
+    tileSize: 1024,
+  }));
+  assert.equal(result.ok, true);
+  const frame = result.plan.frame;
+  assert.equal(frame.style, 'polaroid');
+  assert.equal(result.plan.outerWidth, frame.outerW);
+  assert.equal(result.plan.outerHeight, frame.outerH);
+  assert.ok(Math.max(frame.outerW, frame.outerH) <= 4096, 'the framed file stays within 4096 px');
+  assert.equal(frame.photoW, result.plan.width);
+  assert.equal(frame.photoH, result.plan.height);
+  assert.ok(host.events.includes(`canvas:${frame.outerW}x${frame.outerH}`));
+  const borderIndex = host.events.indexOf('border:polaroid:Kodak Portra 400');
+  assert.ok(borderIndex !== -1, 'the border is painted');
+  assert.ok(borderIndex < host.events.indexOf('draw:0'), 'the border precedes the tiles');
+  assert.ok(host.events.includes(`decode:${frame.photoW}x${frame.photoH}`));
+  // The tiles cover the picture rectangle exactly, offset by the margins.
+  let area = 0;
+  host.tiles.forEach((tile) => {
+    area += tile.width * tile.height;
+    assert.ok(tile.x >= frame.left && tile.y >= frame.top);
+    assert.ok(tile.x + tile.width <= frame.left + frame.photoW);
+    assert.ok(tile.y + tile.height <= frame.top + frame.photoH);
+  });
+  assert.equal(area, frame.photoW * frame.photoH);
+}
+
+{
+  // No border: nothing is painted and the tiles keep their plain coordinates.
+  const host = createMockHost({ wx: { authSetting: { 'scope.writePhotosAlbum': true } } });
+  const result = await Export.exportImage(exportOptions(host, { tileSize: 1024 }));
+  assert.equal(result.ok, true);
+  assert.equal(result.plan.frame.style, 'none');
+  assert.equal(result.plan.outerWidth, result.plan.width);
+  assert.equal(result.plan.outerHeight, result.plan.height);
+  assert.ok(!host.events.some((event) => event.startsWith('border:')));
+  assert.equal(host.tiles[0].x, 0);
+  assert.equal(host.tiles[0].y, 0);
+}
+
+{
+  // A host that cannot draw a border refuses the export instead of saving a
+  // picture without the border the user asked for.
+  const host = createMockHost({ wx: { authSetting: { 'scope.writePhotosAlbum': true } } });
+  delete host.drawBorder;
+  await assert.rejects(
+    Export.exportImage(exportOptions(host, { border: 'black' })),
+    /cannot draw a border/
+  );
 }
 
 {

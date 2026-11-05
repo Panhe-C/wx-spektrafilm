@@ -104,6 +104,12 @@ function createInstance() {
       return { pixels, width: options.width, height: options.height };
     },
     clearPhoto() {},
+    setFrame(style) {
+      instance.renderer.frameStyle = style;
+    },
+    getFrame() {
+      return instance.renderer.frameStyle || 'none';
+    },
     resize() {},
     resizeToCssSize(width, height) {
       return { width, height, cssWidth: width, cssHeight: height };
@@ -414,7 +420,12 @@ const insets = [];
 chrome.renderer.setPresentationInset = (inset) => insets.push(inset);
 assert.equal(chrome.data.panel, '');
 assert.equal(chrome.data.activeTab, 'film');
-assert.deepEqual(chrome.data.tabs.map((tab) => tab.key), ['film', 'adjust', 'effects']);
+assert.deepEqual(chrome.data.tabs.map((tab) => tab.key), ['film', 'adjust', 'effects', 'border']);
+assert.deepEqual(
+  chrome.data.borderStyles.map((card) => card.id),
+  ['none', 'thin-white', 'polaroid', 'black', 'film35', 'film120', 'edge-black-thin', 'edge-black', 'edge-white-thin', 'edge-white']
+);
+assert.equal(chrome.data.borderStyle, 'none');
 assert.deepEqual(
   chrome.data.adjustSliders.map((slider) => slider.key),
   ['ev', 'temperature', 'tint', 'intensity', 'contrast', 'saturation']
@@ -493,6 +504,105 @@ chrome.onClearPhoto();
 assert.equal(chrome.data.panel, '');
 assert.deepEqual(insets[insets.length - 1], { bottom: 0 });
 wx.createSelectorQuery = baseQuery;
+
+// --- the film border ---------------------------------------------------------
+
+{
+  const framed = createInstance();
+  framed.setData({ hasPhoto: true });
+  // Without a photo a card tap is ignored.
+  const empty = createInstance();
+  empty.onBorderTap({ currentTarget: { dataset: { id: 'black' } } });
+  assert.equal(empty.border, 'none');
+
+  const insetsSeen = [];
+  framed.renderer.setPresentationInset = (inset) => insetsSeen.push(inset);
+  const sheetRects = {
+    '#previewStage': { top: 100, bottom: 900, height: 800, width: 375 },
+    '#editSheet': { top: 700, bottom: 900, height: 200, width: 375 },
+  };
+  const savedQuery = wx.createSelectorQuery;
+  wx.createSelectorQuery = () => ({
+    select: (selector) => ({
+      boundingClientRect: () => ({ exec: (callback) => callback([sheetRects[selector] || null]) }),
+    }),
+  });
+  await framed.onTabTap({ currentTarget: { dataset: { tab: 'border' } } });
+  wx.createSelectorQuery = savedQuery;
+  assert.equal(framed.data.panel, 'border');
+  assert.equal(framed.data.sheetTitle, '边框');
+  assert.equal(framed.data.sheetResetEnabled, false, 'no border: nothing to reset');
+  assert.deepEqual(insetsSeen[insetsSeen.length - 1], { bottom: 200 });
+
+  framed.onBorderTap({ currentTarget: { dataset: { id: 'film35' } } });
+  assert.equal(framed.border, 'film35');
+  assert.equal(framed.data.borderStyle, 'film35');
+  assert.equal(framed.renderer.getFrame(), 'film35');
+  assert.equal(framed.data.sheetResetEnabled, true);
+  // Unknown ids fall back to no border.
+  framed.setBorderStyle('nope');
+  assert.equal(framed.border, 'none');
+  assert.equal(framed.renderer.getFrame(), 'none');
+  framed.onBorderTap({ currentTarget: { dataset: { id: 'polaroid' } } });
+  framed.onSheetReset();
+  assert.equal(framed.border, 'none', 'the border sheet reset removes the border');
+  assert.equal(framed.data.sheetResetEnabled, false);
+
+  // The border is edit state: it survives a preset change and a cleared photo,
+  // and is handed to the export together with the stock name.
+  framed.onBorderTap({ currentTarget: { dataset: { id: 'black' } } });
+  framed.onClearPhoto();
+  assert.equal(framed.border, 'black');
+  assert.equal(framed.data.borderStyle, 'black');
+  framed.setData({ hasPhoto: true });
+  framed.photoSrc = 'wxfile://photo.jpg';
+  framed.activeStock = { id: 'portra400', name: 'Kodak Portra 400' };
+  let exportArgs = null;
+  framed.exportRunner = async (args) => {
+    exportArgs = args;
+    return { ok: true };
+  };
+  framed.exportHostFactory = () => ({});
+  await framed.onSaveTap();
+  assert.equal(exportArgs.border, 'black');
+  assert.equal(exportArgs.stockName, 'Kodak Portra 400');
+
+  // The overlay paints the frame only when something changed.
+  const painted = [];
+  const makeContext = () => new Proxy({}, {
+    get: (target, name) => {
+      if (name === 'measureText') return () => ({ width: 10 });
+      return (...args) => { painted.push([String(name), ...args]); };
+    },
+    set: () => true,
+  });
+  framed.frameCanvas = { width: 750, height: 1600 };
+  framed.frameContext = makeContext();
+  framed.frameCanvasSize = { width: 375, height: 800 };
+  framed.activeStock = { id: 'portra400', name: 'Kodak Portra 400' };
+  const border = require('../utils/border.js');
+  const presentation = {
+    frame: {
+      style: 'film35',
+      layout: border.computeLayout('film35', 1200, 800),
+      cssRect: { x: 10, y: 100, width: 355, height: 360 },
+    },
+  };
+  framed.syncFrameOverlay(presentation);
+  const firstPaint = painted.length;
+  assert.ok(firstPaint > 0);
+  assert.ok(painted.some((call) => call[0] === 'clearRect'));
+  assert.ok(painted.some((call) => call[0] === 'fillText' && call[1] === 'KODAK PORTRA 400'));
+  framed.syncFrameOverlay(presentation);
+  assert.equal(painted.length, firstPaint, 'an unchanged frame is not repainted');
+  framed.activeStock = { id: 'gold200', name: 'Kodak Gold 200' };
+  framed.syncFrameOverlay(presentation);
+  assert.ok(painted.length > firstPaint, 'a new stock name repaints the edge print');
+  const afterName = painted.length;
+  framed.syncFrameOverlay({ frame: null });
+  assert.ok(painted.length > afterName, 'removing the border clears the overlay');
+  assert.ok(painted.slice(afterName).every((call) => call[0] !== 'fillRect'));
+}
 
 // About, banners and the export card.
 chrome.onOpenAbout();

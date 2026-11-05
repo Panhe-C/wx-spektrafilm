@@ -24,6 +24,11 @@ the resolution of the original photograph:
 The original file is never modified: it is decoded, drawn into an offscreen
 2D canvas at the export size and rendered from there.
 
+With a film border (`docs/BORDER.md`) the same picture is exported inside a frame: the 2D assembly
+canvas is the size of the framed file, the picture is shrunk only as far as needed to keep the
+framed long edge within 4096 px, and the tiles are blitted at the frame's left/top margins after
+the frame has been painted. The border itself is not graded.
+
 The export size is the *long* edge; the short edge follows from the aspect
 ratio. A 12 MP phone photo (4032×3024) is therefore exported at 4032×3024
 when the GPU allows it, and at 2048×1536 on a device whose maximum texture

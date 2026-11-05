@@ -95,6 +95,17 @@
   background: #080808;
 }
 
+.frame-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
 .preview-canvas {
   position: absolute;
   top: 0;
@@ -535,6 +546,98 @@
 
 .sheet-disabled {
   color: #555555;
+}
+
+/* The border picker is a short sheet: the photo keeps most of the stage. */
+.sheet-compact {
+  height: 330rpx;
+}
+
+.border-scroll {
+  flex: 0 0 auto;
+  width: 100%;
+  height: 176rpx;
+  white-space: nowrap;
+}
+
+.border-inner {
+  display: inline-flex;
+  align-items: flex-start;
+  padding: 4rpx 20rpx 0;
+}
+
+.border-item {
+  flex: 0 0 auto;
+  width: 200rpx;
+  margin-right: 16rpx;
+}
+
+.border-item:last-child {
+  margin-right: 0;
+}
+
+.border-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 113rpx;
+  overflow: hidden;
+  border-radius: 10rpx;
+  background: #080808;
+}
+
+.border-selected .border-slot {
+  box-shadow: 0 0 0 3rpx #d6b98a;
+}
+
+.border-thumb {
+  position: relative;
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+
+.border-photo {
+  position: absolute;
+  overflow: hidden;
+  background: linear-gradient(135deg, #5b6f80, #c8a67b);
+}
+
+.border-photo-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.border-ring {
+  position: absolute;
+}
+
+.border-holes {
+  position: absolute;
+  right: 0;
+  left: 0;
+}
+
+.border-name {
+  margin-top: 12rpx;
+  overflow: hidden;
+  color: #9d9d9d;
+  font-size: 22rpx;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.border-selected .border-name {
+  color: #f2dfc0;
+}
+
+.border-note {
+  padding: 20rpx 28rpx 0;
+  color: #767676;
+  font-size: 20rpx;
+  line-height: 1.4;
 }
 
 .sheet-scroll {
