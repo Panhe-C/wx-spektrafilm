@@ -5,7 +5,7 @@
   "description": "Headless WebGL-versus-NumPy verification for wx-spektrafilm",
   "type": "module",
   "scripts": {
-    "test": "node test-orientation.mjs && node test-adjust.mjs && node test-ui-state.mjs && node test-effects-unit.mjs && node test-export.mjs && node test-privacy.mjs && node test-diagnostics.mjs && node test-page.mjs && node run.mjs && node test-upload-strategies.mjs && node test-presentation.mjs && node test-photo-real.mjs && node test-effects.mjs && node test-export-browser.mjs",
+    "test": "node test-orientation.mjs && node test-adjust.mjs && node test-ui-state.mjs && node test-border.mjs && node test-effects-unit.mjs && node test-export.mjs && node test-privacy.mjs && node test-diagnostics.mjs && node test-page.mjs && node run.mjs && node test-upload-strategies.mjs && node test-presentation.mjs && node test-photo-real.mjs && node test-effects.mjs && node test-export-browser.mjs && node test-border-browser.mjs",
     "test:diagnostics": "node test-diagnostics.mjs && node test-upload-strategies.mjs",
     "test:presentation": "node test-presentation.mjs",
     "test:photo": "node test-photo-real.mjs",
@@ -13,6 +13,7 @@
     "test:adjust": "node test-adjust.mjs",
     "test:ui": "node test-ui-state.mjs",
     "test:effects": "node test-effects-unit.mjs && node test-effects.mjs",
+    "test:border": "node test-border.mjs && node test-border-browser.mjs",
     "test:export": "node test-export.mjs && node test-export-browser.mjs",
     "test:privacy": "node test-privacy.mjs",
     "test:page": "node test-page.mjs",

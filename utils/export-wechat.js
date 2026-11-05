@@ -13,19 +13,22 @@
     module.exports = factory(
       require('./lut-renderer.js'),
       require('./photo.js'),
-      require('./shaders.js')
+      require('./shaders.js'),
+      require('./border.js')
     );
   } else {
     root.SpektrafilmExportHost = factory(
       root.SpektrafilmRenderer,
       root.SpektrafilmPhoto,
-      root.SpektrafilmShaders
+      root.SpektrafilmShaders,
+      root.SpektrafilmBorder
     );
   }
 }(typeof globalThis !== 'undefined' ? globalThis : this, function exportHostFactory(
   RendererModule,
   PhotoModule,
-  ShaderModule
+  ShaderModule,
+  BorderModule
 ) {
   const DEFAULT_TIMEOUTS = Object.freeze({
     default: 8000,
@@ -368,6 +371,15 @@
 
       // --- assembly --------------------------------------------------------
       createAssemblyCanvas: (width, height) => createOffscreen2D(width, height),
+      // The border is plain Canvas 2D drawing into the assembly canvas; it is
+      // painted before the tiles, so it is never graded or grained.
+      drawBorder: (canvas, layout, borderOptions) => {
+        const context = canvas.getContext('2d');
+        if (!context) {
+          throw new Error('The assembly canvas has no 2D context');
+        }
+        BorderModule.drawBorder(context, layout, borderOptions);
+      },
       drawTile: (canvas, tile, pixels) => {
         const context = canvas.getContext('2d');
         if (!context) {

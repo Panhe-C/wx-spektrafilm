@@ -3,11 +3,23 @@
 // shaders/*.glsl by the harness. Do not fork the lookup math into either host.
 (function registerRenderer(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('./adjust.js'), require('./effects.js'));
+    module.exports = factory(
+      require('./adjust.js'),
+      require('./effects.js'),
+      require('./border.js')
+    );
   } else {
-    root.SpektrafilmRenderer = factory(root.SpektrafilmAdjustments, root.SpektrafilmEffects);
+    root.SpektrafilmRenderer = factory(
+      root.SpektrafilmAdjustments,
+      root.SpektrafilmEffects,
+      root.SpektrafilmBorder
+    );
   }
-}(typeof globalThis !== 'undefined' ? globalThis : this, function rendererFactory(Adjustments, Effects) {
+}(typeof globalThis !== 'undefined' ? globalThis : this, function rendererFactory(
+  Adjustments,
+  Effects,
+  Border
+) {
   const CONTEXT_ATTRIBUTES = {
     alpha: false,
     antialias: false,
@@ -214,6 +226,38 @@
     };
   }
 
+  // A film border around the photo (utils/border.js). The FRAMED picture
+  // (photo plus margins) is fitted into the presentation area exactly like a
+  // plain photo, and the photo goes into the sub-rectangle left by the
+  // margins. The margins are the remainder, so photo + margins always tile the
+  // outer rectangle without a gap. y is in GL coordinates (bottom-up).
+  function computeFramedRects(bufferWidth, bufferHeight, layout, insetPx) {
+    const outer = computePresentationRect(
+      bufferWidth, bufferHeight, layout.outerW, layout.outerH, insetPx
+    );
+    const scaleX = outer.width / layout.outerW;
+    const scaleY = outer.height / layout.outerH;
+    const left = Math.round(layout.left * scaleX);
+    const right = Math.round(layout.right * scaleX);
+    const top = Math.round(layout.top * scaleY);
+    const bottom = Math.round(layout.bottom * scaleY);
+    return {
+      outer,
+      photo: {
+        x: outer.x + left,
+        y: outer.y + bottom,
+        width: Math.max(1, outer.width - left - right),
+        height: Math.max(1, outer.height - top - bottom),
+      },
+    };
+  }
+
+  function hexToUnitRgb(hex) {
+    const match = /^#([0-9a-f]{6})$/i.exec(String(hex || ''));
+    const value = match ? parseInt(match[1], 16) : 0;
+    return [(value >> 16) / 255, ((value >> 8) & 255) / 255, (value & 255) / 255];
+  }
+
   function computePreviewSize(width, height, devicePixelRatio, maxTextureSize, longEdge) {
     const targetEdge = longEdge || 1280;
     if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
@@ -303,6 +347,8 @@
     // CSS-pixel insets of the preview (see computePresentationRect).
     let presentationInset = { top: 0, right: 0, bottom: 0, left: 0 };
     let lastIntensity = 1;
+    // The film border style of the preview ('none' = no border).
+    let frameStyle = 'none';
 
     const program = createProgram(gl, options.vertexSource, options.fragmentSource);
     const haloProgram = options.haloFragmentSource
@@ -999,6 +1045,20 @@ void main() {
       return Object.assign({}, presentationInset);
     }
 
+    // Choose the border. The layout is computed from the photo at render
+    // time, so it can never disagree with the photo that is on screen.
+    function setFrame(style) {
+      if (!Border) {
+        throw new Error('utils/border.js must be loaded before the renderer');
+      }
+      frameStyle = Border.normalizeStyle(style);
+      return frameStyle;
+    }
+
+    function getFrame() {
+      return frameStyle;
+    }
+
     function setPhoto(source, details, retryDecode) {
       const result = uploadRecord(photoRecord, source, 'photo', null, retryDecode);
       photoRecord.details = details || null;
@@ -1325,6 +1385,7 @@ void main() {
           photoRect: {
             x: viewport.x, y: viewport.y, width: viewport.width, height: viewport.height,
           },
+          frame: target.frame || null,
           intensity,
         };
       }
@@ -1347,18 +1408,48 @@ void main() {
           ? bufferWidth / lastBufferGeometry.cssWidth : 1;
         const scaleY = lastBufferGeometry && lastBufferGeometry.cssHeight > 0
           ? bufferHeight / lastBufferGeometry.cssHeight : 1;
-        const photoRect = computePresentationRect(
-          bufferWidth, bufferHeight, photoRecord.width, photoRecord.height,
-          {
-            top: presentationInset.top * scaleY,
-            bottom: presentationInset.bottom * scaleY,
-            left: presentationInset.left * scaleX,
-            right: presentationInset.right * scaleX,
-          }
-        );
+        const insets = {
+          top: presentationInset.top * scaleY,
+          bottom: presentationInset.bottom * scaleY,
+          left: presentationInset.left * scaleX,
+          right: presentationInset.right * scaleX,
+        };
+        let photoRect;
+        let frame = null;
+        if (frameStyle !== 'none' && Border) {
+          const layout = Border.computeLayout(frameStyle, photoRecord.width, photoRecord.height);
+          const rects = computeFramedRects(bufferWidth, bufferHeight, layout, insets);
+          photoRect = rects.photo;
+          // The margins are flat colour first; the overlay canvas adds the
+          // decoration (sprocket holes, edge print) on top. The photo
+          // viewport is drawn afterwards and never overlaps the margins.
+          const colour = hexToUnitRgb(layout.color);
+          gl.enable(gl.SCISSOR_TEST);
+          gl.scissor(rects.outer.x, rects.outer.y, rects.outer.width, rects.outer.height);
+          gl.clearColor(colour[0], colour[1], colour[2], 1);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          gl.disable(gl.SCISSOR_TEST);
+          gl.clearColor(8 / 255, 8 / 255, 8 / 255, 1);
+          frame = {
+            style: frameStyle,
+            layout,
+            outerRect: rects.outer,
+            cssRect: {
+              x: rects.outer.x / scaleX,
+              y: (bufferHeight - rects.outer.y - rects.outer.height) / scaleY,
+              width: rects.outer.width / scaleX,
+              height: rects.outer.height / scaleY,
+            },
+          };
+        } else {
+          photoRect = computePresentationRect(
+            bufferWidth, bufferHeight, photoRecord.width, photoRecord.height, insets
+          );
+        }
         const target = defaultTarget(photoRect.width, photoRect.height);
         // Frame-relative effects use the photo rect, not the letterboxed stage.
         target.viewport = photoRect;
+        target.frame = frame;
         target.onScreen = true;
         draw(lastIntensity, adjustments, effects, target);
       } else {
@@ -1368,6 +1459,7 @@ void main() {
           bufferHeight,
           viewport: [0, 0, bufferWidth, bufferHeight],
           photoRect: null,
+          frame: null,
           intensity: 0,
         };
       }
@@ -1827,6 +1919,8 @@ void main() {
       resizeToCssSize,
       setPresentationInset,
       getPresentationInset,
+      setFrame,
+      getFrame,
       setPhoto,
       setLut,
       setExtendedLut,
@@ -1854,6 +1948,7 @@ void main() {
     computeDrawingBufferSize,
     computeAspectFitRect,
     computePresentationRect,
+    computeFramedRects,
     computeFrameRect,
     createRenderer,
   };

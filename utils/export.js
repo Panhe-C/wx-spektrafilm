@@ -17,11 +17,23 @@
 // late callback is ignored, so a step can never complete twice.
 (function registerExport(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('./effects.js'), require('./step-log.js'));
+    module.exports = factory(
+      require('./effects.js'),
+      require('./step-log.js'),
+      require('./border.js')
+    );
   } else {
-    root.SpektrafilmExport = factory(root.SpektrafilmEffects, root.SpektrafilmStepLog);
+    root.SpektrafilmExport = factory(
+      root.SpektrafilmEffects,
+      root.SpektrafilmStepLog,
+      root.SpektrafilmBorder
+    );
   }
-}(typeof globalThis !== 'undefined' ? globalThis : this, function exportFactory(Effects, StepLog) {
+}(typeof globalThis !== 'undefined' ? globalThis : this, function exportFactory(
+  Effects,
+  StepLog,
+  Border
+) {
   // The export never exceeds 4096 px on the long edge, and never exceeds the
   // GPU limits of the device.
   const EXPORT_MAX_LONG_EDGE = 4096;
@@ -167,15 +179,55 @@
   }
 
   /**
+   * The size of the graded picture and of the frame around it.
+   *
+   * Without a border the frame is empty and the picture size is the plain
+   * export size. With a border the picture is shrunk just enough that the
+   * FRAMED picture still fits the long-edge budget (EXPORT_MAX_LONG_EDGE), so
+   * the 2D assembly canvas never exceeds the budget the unframed export has
+   * always had.
+   */
+  function planFrame(settings) {
+    const style = Border ? Border.normalizeStyle(settings.border) : 'none';
+    const limits = {
+      maxLongEdge: settings.maxLongEdge,
+      maxTextureSize: settings.maxTextureSize,
+    };
+    let size = computeExportSize(settings.sourceWidth, settings.sourceHeight, limits);
+    if (style === 'none') {
+      return { size, frame: Border ? Border.computeLayout('none', size.width, size.height) : null };
+    }
+    const budget = Math.min(
+      positiveInteger(settings.maxFrameLongEdge, EXPORT_MAX_LONG_EDGE),
+      positiveInteger(settings.maxLongEdge, EXPORT_MAX_LONG_EDGE)
+    );
+    const fitted = Border.fitLayout(
+      style, size.width, size.height, budget,
+      (width, height, targetLong) => {
+        size = computeExportSize(settings.sourceWidth, settings.sourceHeight, {
+          maxLongEdge: targetLong,
+          maxTextureSize: settings.maxTextureSize,
+        });
+        return size;
+      }
+    );
+    return { size, frame: fitted.layout };
+  }
+
+  /**
    * The whole export plan: the size, the margin, the tile size and the
    * tiles with their renderer targets.
+   *
+   * plan.width/height are the size of the graded PICTURE (the tiles cover
+   * exactly that); plan.outerWidth/outerHeight are the size of the exported
+   * file, which is larger when a border is chosen. plan.frame holds the border
+   * layout (style 'none' = no border) and the tiles are blitted at
+   * (frame.left, frame.top) into the framed canvas.
    */
   function planExport(options) {
     const settings = options || {};
-    const size = computeExportSize(settings.sourceWidth, settings.sourceHeight, {
-      maxLongEdge: settings.maxLongEdge,
-      maxTextureSize: settings.maxTextureSize,
-    });
+    const framed = planFrame(settings);
+    const size = framed.size;
     const longEdgePx = Math.max(size.width, size.height);
     const margin = exportMargin(
       settings.stockId,
@@ -196,6 +248,9 @@
       scale: size.scale,
       sourceWidth: size.sourceWidth,
       sourceHeight: size.sourceHeight,
+      frame: framed.frame,
+      outerWidth: framed.frame ? framed.frame.outerW : size.width,
+      outerHeight: framed.frame ? framed.frame.outerH : size.height,
       margin,
       tileSize,
       tiles: [],
@@ -984,7 +1039,13 @@
         tileSize: settings.tileSize,
         stockId: settings.stockId,
         halationStrength: settings.halationStrength,
+        border: settings.border,
+        maxFrameLongEdge: settings.maxFrameLongEdge,
       });
+      const frame = plan.frame && plan.frame.style !== 'none' ? plan.frame : null;
+      if (frame && typeof host.drawBorder !== 'function') {
+        throw new Error('The export host cannot draw a border');
+      }
 
       report('decode', { width: plan.width, height: plan.height });
       const decoded = await context.runStep('decode', (callbacks) => {
@@ -1010,8 +1071,17 @@
           promise.then(callbacks.success, callbacks.fail);
         }
       });
-      const assembly = host.createAssemblyCanvas(plan.width, plan.height);
+      // The assembly canvas is the size of the exported file: the picture
+      // plus the border. The frame is painted first and only touches the
+      // margins; the tiles then overwrite exactly the picture rectangle.
+      const assembly = host.createAssemblyCanvas(plan.outerWidth, plan.outerHeight);
       try {
+        if (frame) {
+          host.drawBorder(assembly, frame, {
+            stockName: settings.stockName || '',
+            frameNumber: settings.frameNumber,
+          });
+        }
         for (let index = 0; index < plan.tiles.length; index += 1) {
           if (isCancelled()) {
             await cleanup(renderer);
@@ -1026,7 +1096,11 @@
             adjustments: settings.adjustments,
             effects: settings.effects,
           });
-          host.drawTile(assembly, tile, result.pixels);
+          host.drawTile(
+            assembly,
+            frame ? Object.assign({}, tile, { x: tile.x + frame.left, y: tile.y + frame.top }) : tile,
+            result.pixels
+          );
           report('render', { index: index + 1, total: plan.tiles.length });
           if (typeof host.yield === 'function') {
             await host.yield();
@@ -1152,6 +1226,7 @@
     exportMargin,
     planTiles,
     buildTileTarget,
+    planFrame,
     planExport,
     createCancelSignal,
     createContext,

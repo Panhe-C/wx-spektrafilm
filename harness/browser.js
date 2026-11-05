@@ -1,4 +1,4 @@
-/* global SpektrafilmRenderer, SpektrafilmAdjustments, SpektrafilmEffects, SpektrafilmUiState */
+/* global SpektrafilmRenderer, SpektrafilmAdjustments, SpektrafilmEffects, SpektrafilmUiState, SpektrafilmBorder */
 (function initialiseHarness() {
   let renderer = null;
   let manifest = null;
@@ -848,6 +848,150 @@
     };
   }
 
+  // The framed export: the same planner and painter as the Mini Program. The
+  // frame is painted first, the graded tiles are blitted inside the margins.
+  async function exportFramed(id, width, height, options) {
+    const settings = options || {};
+    const state = { ...DEFAULTS, ...(settings.adjustments || {}) };
+    const effectState = { ...SpektrafilmEffects.EFFECT_DEFAULTS, ...(settings.effects || {}) };
+    const images = await cacheStock(id);
+    const stock = stockById(id);
+    renderer.setLut(images.base, stock, null);
+    renderer.setAdjustments(state);
+    renderer.setEffects(effectState);
+    const plan = SpektrafilmExport.planExport({
+      sourceWidth: width,
+      sourceHeight: height,
+      maxTextureSize: renderer.maxTextureSize,
+      maxLongEdge: settings.maxLongEdge || 4096,
+      tileSize: settings.tileSize || 1024,
+      stockId: id,
+      halationStrength: effectState.halation,
+      border: settings.border,
+    });
+    const frame = plan.frame;
+    const output = document.createElement('canvas');
+    output.width = plan.outerWidth;
+    output.height = plan.outerHeight;
+    const context = output.getContext('2d');
+    // A poisoned background proves that the frame and the tiles cover
+    // everything they are responsible for.
+    context.fillStyle = '#ff00ff';
+    context.fillRect(0, 0, output.width, output.height);
+    SpektrafilmBorder.drawBorder(context, frame, { stockName: stock.name });
+    for (const tile of plan.tiles) {
+      const result = renderer.renderRegionToPixels({
+        width: tile.width,
+        height: tile.height,
+        target: tile.target,
+        intensity: 1,
+        adjustments: state,
+        effects: effectState,
+      });
+      const imageData = context.createImageData(tile.width, tile.height);
+      imageData.data.set(result.pixels);
+      context.putImageData(imageData, tile.x + frame.left, tile.y + frame.top);
+    }
+    renderer.finish();
+    const sample = (x, y) => Array.from(context.getImageData(x, y, 1, 1).data.slice(0, 3));
+    const photoData = context.getImageData(frame.left, frame.top, frame.photoW, frame.photoH).data;
+    let checksum = 2166136261;
+    for (let index = 0; index < photoData.length; index += 1) {
+      checksum = Math.imul(checksum ^ photoData[index], 16777619) >>> 0;
+    }
+    // Count poisoned pixels (the poison must be fully overwritten).
+    const whole = context.getImageData(0, 0, output.width, output.height).data;
+    let poisoned = 0;
+    for (let index = 0; index < whole.length; index += 4) {
+      if (whole[index] === 255 && whole[index + 1] === 0 && whole[index + 2] === 255) {
+        poisoned += 1;
+      }
+    }
+    return {
+      plan: {
+        width: plan.width,
+        height: plan.height,
+        outerWidth: plan.outerWidth,
+        outerHeight: plan.outerHeight,
+        tileCount: plan.tiles.length,
+        frame,
+      },
+      poisoned,
+      photoChecksum: checksum,
+      samples: {
+        corner: sample(2, 2),
+        photoCentre: sample(frame.left + Math.floor(frame.photoW / 2), frame.top + Math.floor(frame.photoH / 2)),
+        photoFirst: sample(frame.left, frame.top),
+        photoLast: sample(frame.left + frame.photoW - 1, frame.top + frame.photoH - 1),
+      },
+      dataUrl: output.toDataURL('image/png'),
+    };
+  }
+
+  // The live preview with a frame: render into a buffer of bufferW x bufferH
+  // and read the default framebuffer back.
+  function previewFramed(style, bufferW, bufferH, inset) {
+    renderer.resizeToCssSize(bufferW, bufferH, 1);
+    renderer.setPresentationInset(inset || { bottom: 0 });
+    renderer.setFrame(style);
+    const presentation = renderer.render(1);
+    const gl = renderer.gl;
+    const width = gl.drawingBufferWidth;
+    const height = gl.drawingBufferHeight;
+    const pixels = new Uint8Array(width * height * 4);
+    gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    const at = (x, y) => Array.from(pixels.slice((y * width + x) * 4, (y * width + x) * 4 + 3));
+    const out = document.createElement('canvas');
+    out.width = width;
+    out.height = height;
+    const context = out.getContext('2d');
+    const image = context.createImageData(width, height);
+    for (let row = 0; row < height; row += 1) {
+      const source = (height - 1 - row) * width * 4;
+      image.data.set(pixels.subarray(source, source + width * 4), row * width * 4);
+    }
+    context.putImageData(image, 0, 0);
+    renderer.setFrame('none');
+    return {
+      width,
+      height,
+      presentation: JSON.parse(JSON.stringify(presentation)),
+      at: Object.fromEntries(
+        [[0, 0], [width - 1, 0], [0, height - 1], [width - 1, height - 1]]
+          .map(([x, y]) => [`${x},${y}`, at(x, y)])
+      ),
+      dataUrl: out.toDataURL('image/png'),
+    };
+  }
+
+  // The preview as the Mini Program shows it: the GL frame, then the overlay
+  // canvas painted with the page's transform (utils/border.js drawBorder).
+  function previewComposite(style, bufferW, bufferH, inset, stockName) {
+    const preview = previewFramed(style, bufferW, bufferH, inset);
+    const out = document.createElement('canvas');
+    out.width = preview.width;
+    out.height = preview.height;
+    const context = out.getContext('2d');
+    const image = new Image();
+    return new Promise((resolve) => {
+      image.onload = () => {
+        context.drawImage(image, 0, 0);
+        const frame = preview.presentation.frame;
+        if (frame) {
+          const rect = frame.cssRect;
+          const layout = frame.layout;
+          context.setTransform(
+            rect.width / layout.outerW, 0, 0, rect.height / layout.outerH, rect.x, rect.y
+          );
+          SpektrafilmBorder.drawBorder(context, layout, { stockName });
+          context.setTransform(1, 0, 0, 1, 0, 0);
+        }
+        resolve({ presentation: preview.presentation, dataUrl: out.toDataURL('image/png') });
+      };
+      image.src = preview.dataUrl;
+    });
+  }
+
   window.spektrafilmHarness = {
     initialise,
     getRenderer() {
@@ -859,6 +1003,9 @@
     render,
     renderSized,
     renderTiled,
+    exportFramed,
+    previewFramed,
+    previewComposite,
     compareCanvases,
     compareTiledVsSingle,
     setPhotoData,
