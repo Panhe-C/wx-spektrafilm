@@ -423,7 +423,7 @@ assert.equal(chrome.data.activeTab, 'film');
 assert.deepEqual(chrome.data.tabs.map((tab) => tab.key), ['film', 'adjust', 'effects', 'border']);
 assert.deepEqual(
   chrome.data.borderStyles.map((card) => card.id),
-  ['none', 'thin-white', 'polaroid', 'black', 'film35', 'film120']
+  ['none', 'thin-white', 'polaroid', 'black', 'film35', 'film120', 'edge-black-thin', 'edge-black', 'edge-white-thin', 'edge-white']
 );
 assert.equal(chrome.data.borderStyle, 'none');
 assert.deepEqual(

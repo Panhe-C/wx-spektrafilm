@@ -16,6 +16,10 @@ calls.
 | `black` | 黑边 | even black margin, 4 % of the short edge |
 | `film35` | 35mm 胶片 | black film base with sprocket holes along both long edges (135 perforation proportions), an orange-yellow edge print with the **current preset's name** (capitals, plain text), the frame number (`12` / `12A`) and small frame arrows; the strip is vertical for a portrait photo |
 | `film120` | 120 胶片 | a 120 roll film scanned with its rebate ("带片边扫描"): a thin, slightly irregular black film edge around the **uncropped** photo (any aspect ratio), inside a thin white scan margin; amber edge print with the preset name on the wide side, no sprocket holes |
+| `edge-black-thin` | 不规则细黑边 | a thin, slightly irregular black edge right at the outermost edge of the **uncropped** photo (0.6–1.2 % of the short side, a different width on every side); no print, no sprockets, no scan margin |
+| `edge-black` | 不规则黑边 | the same, wider (1.5–2.5 %) |
+| `edge-white-thin` | 不规则细白边 | the same in off-white (0.6–1.2 %) |
+| `edge-white` | 不规则白边 | the same in off-white, wider (1.5–2.5 %) |
 
 ### 120 胶片
 
@@ -42,6 +46,31 @@ Modelled on real full-rebate scans of 120 film (6×6 / 6×7 Portra and B&W scans
   graded pixels stay bit-identical.
 * Not done on purpose: a soft feather on the inside edge of the black (that would paint on photo
   pixels and would need a post-tile pass in the export) and neighbouring frames of a strip.
+
+### Irregular edges (不规则细黑边 / 黑边 / 细白边 / 白边)
+
+Only the film-edge band, nothing else: the outermost edge of a scan whose film carrier is not
+quite square to the picture.
+
+* The photo is never cropped and the file is a clean, opaque rectangle (no transparent pixels):
+  the frame is the photo plus the band on each side. Widths are fractions of the photo's short
+  side (thin 0.6–1.2 %, normal 1.5–2.5 %). The four sides get four *different* widths (a seeded
+  shuffle of four spread levels, so the unevenness is always visible).
+* The photo rectangle is straight and must not be painted on, so the irregularity cannot be
+  drawn on the inner side. It is drawn on the outer side instead: the whole band is first filled
+  with the band colour (black `#050505`, off-white `#fcfbf8`), and a slightly different **rim
+  tone** (black `#2e2d2a`, white `#e2e0d9`, exported as `EDGE_RIM`) is filled outside a wobbly
+  contour that sits 24–60 % of the band width in from the file's outer edge. The contour wobbles
+  gently along every side (two low-frequency sines, tapered to zero near the corners) and meets
+  the corners with soft rounded arcs, so it reads as a slightly crooked, hand-cut film-carrier
+  edge, not a torn one. Rim corners at pixel (0,0) are therefore the rim colour.
+* The pattern is deterministic (`mulberry32`, seeds 21–24, in units of the photo), so the preview,
+  the export and every device draw the same edge at any resolution. The picker cards raise the
+  edge to at least 3.5 % so it stays legible in a miniature.
+* The ring is one filled path (frame rectangle counter-clockwise, contour clockwise), so no
+  `evenodd`, `stroke` or curve calls are needed. Nothing lands inside the photo rectangle.
+* Risk: the rim tone is a subtle effect; on a very small preview the black variants read as a
+  plain thin black border.
 
 The film styles use the real 135 geometry for a 3:2 picture (a 5.5 mm band on a 36 mm frame is
 15.3 % of the long edge). The edge print contains the stock name as plain text and draws the
@@ -108,3 +137,6 @@ node test-border-browser.mjs  # real renderer + Canvas 2D in Chrome; writes harn
 5. 120 胶片: the thin black edge hugs the photo with no white hairline between them (preview and
    saved file), the edge print stays inside the black band for landscape, portrait, square and a
    16:9 photo, and the white margin looks the same in the preview and in the saved file.
+6. Irregular edges: the rim tone and the rounded corners are visible but subtle in the preview and
+   the saved file, the four sides differ in width, there is no seam between the band and the photo,
+   and the saved file has no transparent corner.

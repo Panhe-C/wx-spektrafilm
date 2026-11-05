@@ -404,7 +404,7 @@ debug session). None of them is covered by the headless harness.
     note). Press-and-hold on the visible photo still shows the original.
 22. **Top bar** — 相册 / 拍照 import, 清除 appears with a photo, 保存 is dimmed without a photo and
     while exporting, ⓘ opens the about sheet, long-press on SPEKTRAFILM opens the diagnostics.
-23. **Film border** — 边框 opens a short sheet with six cards; choosing one frames the live preview
+23. **Film border** — 边框 opens a short sheet with ten cards (four of them the irregular thin black / black / thin white / white edges); choosing one frames the live preview
     (the photo re-fits above the sheet, the film styles show sprocket holes and the preset name,
     the name follows when another preset is chosen), 无边框 removes it, 「重置」 does the same, and
     the choice survives preset changes and a new photo. The saved file carries the same frame at the

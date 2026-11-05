@@ -11,7 +11,7 @@ const Renderer = require('../utils/lut-renderer.js');
 
 // --- the catalogue ----------------------------------------------------------
 
-assert.deepEqual(Border.STYLE_IDS, ['none', 'thin-white', 'polaroid', 'black', 'film35', 'film120']);
+assert.deepEqual(Border.STYLE_IDS, ['none', 'thin-white', 'polaroid', 'black', 'film35', 'film120', 'edge-black-thin', 'edge-black', 'edge-white-thin', 'edge-white']);
 assert.equal(Border.STYLES[0].name, '无边框', 'the default is "no border"');
 assert.equal(Border.normalizeStyle('film35'), 'film35');
 assert.equal(Border.normalizeStyle('bogus'), 'none');
@@ -123,6 +123,79 @@ assert.throws(() => Border.computeLayout('black', 100, NaN));
   assert.ok(Border.isMonochrome('黑白'));
   assert.ok(!Border.isMonochrome('Kodak Portra 400'));
   assert.ok(!Border.isMonochrome(''));
+}
+
+
+// --- irregular film edges: a thin band right at the outermost edge ----------
+
+{
+  const edges = {
+    'edge-black-thin': { name: '不规则细黑边', lo: 0.006, hi: 0.012 },
+    'edge-black': { name: '不规则黑边', lo: 0.015, hi: 0.025 },
+    'edge-white-thin': { name: '不规则细白边', lo: 0.006, hi: 0.012 },
+    'edge-white': { name: '不规则白边', lo: 0.015, hi: 0.025 },
+  };
+  for (const [id, spec] of Object.entries(edges)) {
+    assert.equal(Border.styleName(id), spec.name);
+    for (const [w, h] of [[3000, 2000], [2000, 3000], [2000, 2000], [1600, 900], [6000, 1000], [1000, 6000]]) {
+      const layout = Border.computeLayout(id, w, h);
+      const short = Math.min(w, h);
+      assert.equal(layout.photoW, w, 'the photo is not cropped');
+      assert.equal(layout.photoH, h);
+      const sides = ['left', 'top', 'right', 'bottom'].map((key) => layout[key]);
+      sides.forEach((value) => {
+        assert.ok(value / short >= spec.lo - 0.001 && value / short <= spec.hi + 0.001,
+          `${id} ${w}x${h}: a side is ${(100 * value / short).toFixed(2)} % of the short edge`);
+      });
+      assert.ok(new Set(sides).size >= 3, `${id}: the sides differ (${sides})`);
+      assert.equal(layout.color, id.indexOf('black') === -1 ? '#fcfbf8' : '#050505');
+      assert.deepEqual(Border.computeLayout(id, w, h), layout, 'deterministic');
+    }
+    // The pattern is the same shape at any photo size.
+    const big = Border.computeLayout(id, 4000, 3000);
+    const small = Border.computeLayout(id, 1000, 750);
+    for (const key of ['left', 'top', 'right', 'bottom']) {
+      assert.ok(Math.abs(big.edge.widths[key] / 4 - small.edge.widths[key]) < 1e-9);
+    }
+    assert.deepEqual(big.edge.wobble, small.edge.wobble);
+    assert.ok(Border.EDGE_RIM[id] && Border.EDGE_RIM[id] !== Border.COLORS[id]);
+    // Painting: four band rectangles, then one filled ring (frame minus the wobbly contour).
+    for (const [w, h] of [[3000, 2000], [2000, 3000], [1600, 900]]) {
+      const { layout, context } = paint(id, w, h, {});
+      const rects = context.calls.filter((call) => call.op === 'fillRect');
+      assert.equal(rects.length, 4);
+      assert.ok(rects.every((call) => call.fill === layout.color));
+      const rings = context.calls.filter((call) => call.op === 'fill');
+      assert.equal(rings.length, 1);
+      assert.equal(rings[0].fill, Border.EDGE_RIM[id]);
+      assert.ok(!context.calls.some((call) => call.op === 'fillText'), 'no print');
+      // The contour stays inside the band, between 15 % and 70 % of the band width from the outer edge.
+      const contour = rings[0].points.slice(4);
+      assert.ok(contour.length > 200);
+      contour.forEach(([x, y]) => {
+        const toLeft = x;
+        const toRight = layout.outerW - x;
+        const toTop = y;
+        const toBottom = layout.outerH - y;
+        const inside = (distance, band) => distance >= 0 && distance <= band * 0.7 + 0.01;
+        assert.ok(
+          inside(toLeft, layout.left) || inside(toRight, layout.right) ||
+          inside(toTop, layout.top) || inside(toBottom, layout.bottom),
+          `${id} ${w}x${h}: contour point ${x},${y} left the band`
+        );
+        assert.ok(!insidePhoto(layout, [x, y]));
+      });
+      // A wobble that is actually there: the top side of the contour is not a straight line.
+      const top = contour.filter(([, y]) => y < layout.outerH * 0.25).map(([, y]) => y);
+      assert.ok(Math.max(...top) - Math.min(...top) > 0.02 * layout.top, `${id}: the contour wobbles`);
+    }
+    // The picker card shows a readable edge even for the thinnest style.
+    const card = Border.thumbnailGeometry(id, 300, 200);
+    const photoH = 200;
+    const cardTop = (card.top * photoH) / (1 - card.top - card.bottom);
+    const cardLeft = (card.left * 300) / (1 - card.left - card.right);
+    assert.ok(cardTop >= 0.035 * 200 - 0.01 && cardLeft >= 0.035 * 200 - 0.01, 'a readable edge in the card');
+  }
 }
 
 // A layout scales linearly with the picture, so the preview layout is the

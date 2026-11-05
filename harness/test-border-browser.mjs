@@ -16,7 +16,10 @@ import { PROJECT_ROOT, startServer } from './server.mjs';
 
 const OUT = path.join(PROJECT_ROOT, 'harness', 'out', 'border');
 const SAMPLES = process.env.BORDER_SAMPLES_DIR || '';
-const STYLES = ['none', 'thin-white', 'polaroid', 'black', 'film35', 'film120'];
+const STYLES = [
+  'none', 'thin-white', 'polaroid', 'black', 'film35', 'film120',
+  'edge-black-thin', 'edge-black', 'edge-white-thin', 'edge-white',
+];
 const CASES = [
   { key: 'landscape', photo: 'p1015', width: 1600, height: 1067, stock: 'portra400' },
   { key: 'portrait', photo: 'user-9x16-window', width: 1080, height: 1920, stock: 'vision3_500t' },
@@ -31,6 +34,11 @@ const COLORS = {
   film35: [12, 11, 10],
   // The corner of the file is the white scan margin; the rebate inside is near black.
   film120: [252, 251, 248],
+  // No outer margin: the corner of the file is the film base outside the wobbly contour.
+  'edge-black-thin': [46, 45, 42],
+  'edge-black': [46, 45, 42],
+  'edge-white-thin': [226, 224, 217],
+  'edge-white': [226, 224, 217],
 };
 
 function writeDataUrl(filename, dataUrl) {

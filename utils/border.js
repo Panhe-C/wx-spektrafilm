@@ -33,9 +33,35 @@
     Object.freeze({ id: 'black', name: '黑边' }),
     Object.freeze({ id: 'film35', name: '35mm 胶片' }),
     Object.freeze({ id: 'film120', name: '120 胶片' }),
+    Object.freeze({ id: 'edge-black-thin', name: '不规则细黑边' }),
+    Object.freeze({ id: 'edge-black', name: '不规则黑边' }),
+    Object.freeze({ id: 'edge-white-thin', name: '不规则细白边' }),
+    Object.freeze({ id: 'edge-white', name: '不规则白边' }),
   ]);
   const STYLE_IDS = Object.freeze(STYLES.map((style) => style.id));
 
+  // The irregular film-edge styles: only a narrow band right at the outermost
+  // edge of the picture, no outer margin, no print. `lo`/`hi` bound the width
+  // of every side as a fraction of the short side of the picture. `rim` is the
+  // slightly different tone of the film base outside the wobbly contour that
+  // makes the irregularity visible.
+  const EDGE_STYLES = Object.freeze({
+    'edge-black-thin': Object.freeze({
+      color: '#050505', rim: '#2e2d2a', lo: 0.006, hi: 0.012, seed: 21,
+    }),
+    'edge-black': Object.freeze({
+      color: '#050505', rim: '#2e2d2a', lo: 0.015, hi: 0.025, seed: 22,
+    }),
+    'edge-white-thin': Object.freeze({
+      color: '#fcfbf8', rim: '#e2e0d9', lo: 0.006, hi: 0.012, seed: 23,
+    }),
+    'edge-white': Object.freeze({
+      color: '#fcfbf8', rim: '#e2e0d9', lo: 0.015, hi: 0.025, seed: 24,
+    }),
+  });
+  // A thumbnail in the picker would show a 1 % edge as a hairline: it gets at
+  // least this much (fraction of the short side).
+  const EDGE_THUMBNAIL_MIN = 0.035;
   const COLORS = Object.freeze({
     'thin-white': '#ffffff',
     polaroid: '#f4f1e8',
@@ -43,6 +69,16 @@
     film35: '#0c0b0a',
     // The thin black rebate; the white scan margin outside it is painted on top.
     film120: '#050505',
+    'edge-black-thin': EDGE_STYLES['edge-black-thin'].color,
+    'edge-black': EDGE_STYLES['edge-black'].color,
+    'edge-white-thin': EDGE_STYLES['edge-white-thin'].color,
+    'edge-white': EDGE_STYLES['edge-white'].color,
+  });
+  const EDGE_RIM = Object.freeze({
+    'edge-black-thin': EDGE_STYLES['edge-black-thin'].rim,
+    'edge-black': EDGE_STYLES['edge-black'].rim,
+    'edge-white-thin': EDGE_STYLES['edge-white-thin'].rim,
+    'edge-white': EDGE_STYLES['edge-white'].rim,
   });
   // Orange-yellow edge imprint of a developed colour negative.
   const EDGE_PRINT_COLOR = '#f2a03a';
@@ -231,6 +267,20 @@
         }
         break;
       }
+      case 'edge-black-thin':
+      case 'edge-black':
+      case 'edge-white-thin':
+      case 'edge-white': {
+        const edge = edgeGeometry(style, short);
+        Object.assign(layout, {
+          left: margin(1, edge.widths.left),
+          top: margin(1, edge.widths.top),
+          right: margin(1, edge.widths.right),
+          bottom: margin(1, edge.widths.bottom),
+          edge,
+        });
+        break;
+      }
       case 'film120': {
         const film = film120Geometry(width > height, short);
         const total = (key) => Math.max(1, Math.round(film.white[key] + film.black[key]));
@@ -280,6 +330,47 @@
     return { layout, photoW: width, photoH: height };
   }
 
+  /**
+   * The geometry of an irregular film edge. The band widths differ per side
+   * (floats, picture pixels), and every side has its own smooth wobble of the
+   * contour that separates the band from the film base outside it: two sine
+   * waves with seeded frequency and phase, in units of the side length, so the
+   * pattern is the same for any photo size.
+   */
+  function edgeGeometry(style, short) {
+    const spec = EDGE_STYLES[style];
+    const random = seededRandom(spec.seed);
+    // Four spread-out levels dealt to the sides in a seeded order, so the
+    // sides always differ visibly (a plain random draw can come out equal).
+    const levels = [0.04, 0.38, 0.68, 1];
+    for (let index = levels.length - 1; index > 0; index -= 1) {
+      const pick = Math.floor(random() * (index + 1));
+      const swap = levels[index];
+      levels[index] = levels[pick];
+      levels[pick] = swap;
+    }
+    const width = (level) => (spec.lo + (spec.hi - spec.lo) * level) * short;
+    const widths = {
+      left: width(levels[0]), top: width(levels[1]), right: width(levels[2]), bottom: width(levels[3]),
+    };
+    const wobble = {};
+    ['left', 'top', 'right', 'bottom'].forEach((side) => {
+      wobble[side] = {
+        base: 0.36 + 0.12 * random(),
+        f1: 1.4 + 1.2 * random(),
+        p1: random() * Math.PI * 2,
+        f2: 3.6 + 2.2 * random(),
+        p2: random() * Math.PI * 2,
+      };
+    });
+    return {
+      rim: spec.rim,
+      widths,
+      wobble,
+      radius: Math.min(widths.left, widths.top, widths.right, widths.bottom) * 1.6,
+    };
+  }
+
   // The black widths of the 120 edge, clamped so that a tiny picture, whose
   // margins are rounded to whole pixels, keeps a sliver of white scan margin.
   function film120Blacks(layout) {
@@ -308,6 +399,15 @@
    */
   function thumbnailGeometry(styleId, sampleW, sampleH) {
     const layout = computeLayout(styleId, sampleW || 300, sampleH || 200);
+    if (layout.edge) {
+      // The edge of these styles is far too thin to read in a card.
+      const least = EDGE_THUMBNAIL_MIN * Math.min(layout.photoW, layout.photoH);
+      ['left', 'top', 'right', 'bottom'].forEach((side) => {
+        layout[side] = Math.max(layout[side], least);
+      });
+      layout.outerW = layout.photoW + layout.left + layout.right;
+      layout.outerH = layout.photoH + layout.top + layout.bottom;
+    }
     return {
       style: layout.style,
       aspect: layout.outerW / layout.outerH,
@@ -591,6 +691,82 @@
     drawFilm120Print(ctx, layout, blacks, options);
   }
 
+  // A wobble in [-1, 1] along one side, 0 at both ends so that the contour
+  // meets the rounded corners tangentially.
+  function wobbleAt(spec, fraction) {
+    const wave = 0.62 * Math.sin(Math.PI * 2 * spec.f1 * fraction + spec.p1) +
+      0.38 * Math.sin(Math.PI * 2 * spec.f2 * fraction + spec.p2);
+    const edge = Math.min(1, fraction / 0.12, (1 - fraction) / 0.12);
+    const taper = edge * edge * (3 - 2 * edge);
+    return wave * taper;
+  }
+
+  /**
+   * The irregular film edge. The whole margin is the band colour (four
+   * rectangles, like the plain styles). A contour inside the band, wobbling
+   * slightly per side and softly rounded at the corners, separates the band
+   * from the film base outside it, which is painted in a slightly different
+   * tone. The contour never gets near the picture (it stays in the outer
+   * 24-60 % of every side), so no photo pixel is touched.
+   */
+  function drawEdge(ctx, layout) {
+    const edge = layout.edge;
+    const amplitude = 0.32;
+    const steps = 64;
+    const insets = {};
+    ['left', 'top', 'right', 'bottom'].forEach((side) => {
+      insets[side] = layout[side] * edge.wobble[side].base;
+    });
+    const x0 = insets.left;
+    const x1 = layout.outerW - insets.right;
+    const y0 = insets.top;
+    const y1 = layout.outerH - insets.bottom;
+    const radius = Math.max(0.5, Math.min(edge.radius, (x1 - x0) / 4, (y1 - y0) / 4));
+    const offset = (side, fraction) => insets[side] *
+      (1 + amplitude * wobbleAt(edge.wobble[side], fraction));
+    ctx.fillStyle = edge.rim;
+    ctx.beginPath();
+    // The frame rectangle, counter-clockwise ...
+    ctx.moveTo(0, 0);
+    ctx.lineTo(0, layout.outerH);
+    ctx.lineTo(layout.outerW, layout.outerH);
+    ctx.lineTo(layout.outerW, 0);
+    ctx.closePath();
+    // ... and the contour, clockwise, which cuts a hole in it.
+    ctx.moveTo(x0 + radius, offset('top', 0));
+    for (let index = 1; index <= steps; index += 1) {
+      const fraction = index / steps;
+      ctx.lineTo(x0 + radius + fraction * (x1 - x0 - 2 * radius), offset('top', fraction));
+    }
+    ctx.arcTo(x1, y0, x1, y0 + radius, radius);
+    for (let index = 1; index <= steps; index += 1) {
+      const fraction = index / steps;
+      ctx.lineTo(
+        layout.outerW - offset('right', fraction),
+        y0 + radius + fraction * (y1 - y0 - 2 * radius)
+      );
+    }
+    ctx.arcTo(x1, y1, x1 - radius, y1, radius);
+    for (let index = 1; index <= steps; index += 1) {
+      const fraction = index / steps;
+      ctx.lineTo(
+        x1 - radius - fraction * (x1 - x0 - 2 * radius),
+        layout.outerH - offset('bottom', fraction)
+      );
+    }
+    ctx.arcTo(x0, y1, x0, y1 - radius, radius);
+    for (let index = 1; index <= steps; index += 1) {
+      const fraction = index / steps;
+      ctx.lineTo(
+        offset('left', fraction),
+        y1 - radius - fraction * (y1 - y0 - 2 * radius)
+      );
+    }
+    ctx.arcTo(x0, y0, x0 + radius, y0, radius);
+    ctx.closePath();
+    ctx.fill();
+  }
+
   function drawPolaroidEdge(ctx, layout) {
     // A hairline where the print meets the paper.
     const width = Math.max(1, Math.round(Math.min(layout.photoW, layout.photoH) * 0.0015));
@@ -626,6 +802,8 @@
         drawFilm35(ctx, layout, settings);
       } else if (layout.style === 'film120') {
         drawFilm120(ctx, layout, settings);
+      } else if (layout.edge) {
+        drawEdge(ctx, layout);
       } else if (layout.style === 'polaroid') {
         drawPolaroidEdge(ctx, layout);
       }
@@ -639,6 +817,7 @@
     STYLES,
     STYLE_IDS,
     COLORS,
+    EDGE_RIM,
     EDGE_PRINT_COLOR,
     SPROCKET_COLOR,
     SCAN_MARGIN_COLOR,
