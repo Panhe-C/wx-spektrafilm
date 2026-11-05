@@ -8,6 +8,7 @@ const {
 } = require('../../utils/photo.js');
 const Adjustments = require('../../utils/adjust.js');
 const Effects = require('../../utils/effects.js');
+const Border = require('../../utils/border.js');
 const ui = require('../../utils/ui-state.js');
 const thumbnails = require('../../utils/thumbnail.js');
 const appInfo = require('../../utils/app-info.js');
@@ -57,8 +58,56 @@ const EFFECT_SLIDERS = buildSliders(Effects.EFFECT_LIMITS, Effects.EFFECT_STEPS,
   { key: 'vignette', label: '暗角', post: true },
 ]);
 
-const TOOLBAR_GLYPHS = { film: '◧', adjust: '◐', effects: '✦' };
-const TOOLBAR_TABS = [ui.TABS.FILM, ui.TABS.ADJUST, ui.TABS.EFFECTS].map((key) => ({
+// The border cards of the picker. Each card is a CSS miniature of the frame
+// around a 3:2 sample picture, laid out by the same math (utils/border.js) as
+// the preview and the export, so the card shows the real proportions.
+const BORDER_THUMB_MAX_WIDTH = 184;
+const BORDER_THUMB_MAX_HEIGHT = 99;
+
+function buildBorderCards() {
+  return Border.STYLES.map((entry) => {
+    const geometry = Border.thumbnailGeometry(entry.id, 300, 200);
+    const fitsWidth = geometry.aspect > BORDER_THUMB_MAX_WIDTH / BORDER_THUMB_MAX_HEIGHT;
+    const width = fitsWidth ? BORDER_THUMB_MAX_WIDTH : BORDER_THUMB_MAX_HEIGHT * geometry.aspect;
+    const height = fitsWidth ? BORDER_THUMB_MAX_WIDTH / geometry.aspect : BORDER_THUMB_MAX_HEIGHT;
+    const percent = (value) => `${(value * 100).toFixed(2)}%`;
+    const card = {
+      id: entry.id,
+      name: entry.name,
+      boxStyle: `width: ${width.toFixed(1)}rpx; height: ${height.toFixed(1)}rpx; ` +
+        `background-color: ${entry.id === Border.NONE ? 'transparent' : geometry.color};`,
+      photoStyle: `left: ${percent(geometry.left)}; right: ${percent(geometry.right)}; ` +
+        `top: ${percent(geometry.top)}; bottom: ${percent(geometry.bottom)};`,
+      holes: entry.id === 'film35',
+      holesTopStyle: '',
+      holesBottomStyle: '',
+    };
+    if (card.holes) {
+      // Sprocket holes: a repeating gradient in the bands, in card pixels.
+      const layout = Border.computeLayout(entry.id, 300, 200);
+      const unit = height / layout.outerH;
+      const band = layout.band * unit;
+      const holeLength = band * 0.36;
+      const pitch = band * 0.864;
+      const image = `repeating-linear-gradient(90deg, ${Border.SPROCKET_COLOR} 0, ` +
+        `${Border.SPROCKET_COLOR} ${holeLength.toFixed(2)}rpx, transparent ` +
+        `${holeLength.toFixed(2)}rpx, transparent ${pitch.toFixed(2)}rpx)`;
+      const holeHeight = band * 0.51;
+      const inset = band * 0.17;
+      const shared = `height: ${holeHeight.toFixed(2)}rpx; background-image: ${image};`;
+      card.holesTopStyle = `top: ${inset.toFixed(2)}rpx; ${shared}`;
+      card.holesBottomStyle = `bottom: ${inset.toFixed(2)}rpx; ${shared}`;
+    }
+    return card;
+  });
+}
+
+const BORDER_CARDS = buildBorderCards();
+
+const TOOLBAR_GLYPHS = { film: '◧', adjust: '◐', effects: '✦', border: '▢' };
+const TOOLBAR_TABS = [
+  ui.TABS.FILM, ui.TABS.ADJUST, ui.TABS.EFFECTS, ui.TABS.BORDER,
+].map((key) => ({
   key,
   label: ui.TAB_LABELS[key],
   glyph: TOOLBAR_GLYPHS[key],
@@ -78,6 +127,9 @@ Page({
     tabs: TOOLBAR_TABS,
     adjustSliders: ADJUST_SLIDERS,
     effectSliders: EFFECT_SLIDERS,
+    borderStyles: BORDER_CARDS,
+    borderStyle: Border.NONE,
+    borderThumbSrc: '',
     panel: ui.PANELS.NONE,
     activeTab: ui.TABS.FILM,
     sheetTitle: '',
@@ -160,6 +212,13 @@ Page({
     });
     this.adjustments = Object.assign({}, DEFAULT_ADJUSTMENTS);
     this.effects = Effects.normalize(APP_EFFECT_DEFAULTS);
+    // The film border is part of the edit state: it survives preset changes
+    // and new photos, like the adjustments and the effects.
+    this.border = Border.NONE;
+    this.frameCanvas = null;
+    this.frameContext = null;
+    this.frameCanvasSize = null;
+    this.frameKey = '';
     this.comparing = false;
     this.activeStock = null;
     this.thumbs = Object.create(null);
@@ -228,6 +287,7 @@ Page({
 
   onReady() {
     this.initialiseRenderer();
+    this.initialiseFrameCanvas();
   },
 
   onResize() {
@@ -311,6 +371,7 @@ Page({
             this.devicePixelRatio
           );
           this.renderer.setEffects(this.effects);
+          this.renderer.setFrame(this.border);
           this.setData({ ready: true, error: '' });
         } catch (error) {
           if (error.code === 'WEBGL_UNAVAILABLE') {
@@ -324,6 +385,135 @@ Page({
           }
         }
       });
+  },
+
+  // --- film border ----------------------------------------------------------
+
+  // The overlay is a transparent 2D canvas above the preview. It only paints
+  // the frame decoration (sprocket holes, edge print, hairlines); the margins
+  // themselves are also cleared in the GL buffer by the renderer, so if the
+  // overlay is unavailable the border still shows as a flat frame.
+  initialiseFrameCanvas() {
+    wx.createSelectorQuery()
+      .select('#frameCanvas')
+      .fields({ node: true, size: true })
+      .exec((result) => {
+        try {
+          const entry = result && result[0];
+          if (!entry || !entry.node) {
+            return;
+          }
+          this.frameCanvas = entry.node;
+          this.sizeFrameCanvas(Number(entry.width) || 1, Number(entry.height) || 1);
+        } catch (error) {
+          this.frameCanvas = null;
+          this.frameContext = null;
+        }
+      });
+  },
+
+  sizeFrameCanvas(cssWidth, cssHeight) {
+    const canvas = this.frameCanvas;
+    if (!canvas) {
+      return;
+    }
+    const ratio = this.devicePixelRatio || 1;
+    const size = this.frameCanvasSize;
+    if (size && size.width === cssWidth && size.height === cssHeight && this.frameContext) {
+      return;
+    }
+    canvas.width = Math.max(1, Math.round(cssWidth * ratio));
+    canvas.height = Math.max(1, Math.round(cssHeight * ratio));
+    this.frameCanvasSize = { width: cssWidth, height: cssHeight };
+    this.frameContext = canvas.getContext('2d');
+    // A resized canvas is blank: force the next presentation to repaint.
+    this.frameKey = '';
+  },
+
+  /**
+   * Paint the border decoration for the last presented frame. The overlay is
+   * only repainted when the frame rectangle, the style or the printed stock
+   * name changed, never during a slider drag.
+   */
+  syncFrameOverlay(presentation) {
+    const context = this.frameContext;
+    const canvas = this.frameCanvas;
+    if (!context || !canvas || !this.frameCanvasSize) {
+      return;
+    }
+    const frame = presentation && presentation.frame ? presentation.frame : null;
+    const stockName = this.activeStock ? this.activeStock.name : '';
+    const rect = frame ? frame.cssRect : null;
+    const key = frame
+      ? [
+        frame.style, stockName, rect.x.toFixed(1), rect.y.toFixed(1),
+        rect.width.toFixed(1), rect.height.toFixed(1),
+        this.frameCanvasSize.width, this.frameCanvasSize.height,
+      ].join('|')
+      : 'none';
+    if (key === this.frameKey) {
+      return;
+    }
+    this.frameKey = key;
+    try {
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      if (!frame) {
+        return;
+      }
+      const ratio = this.devicePixelRatio || 1;
+      const layout = frame.layout;
+      context.setTransform(
+        (rect.width / layout.outerW) * ratio, 0,
+        0, (rect.height / layout.outerH) * ratio,
+        rect.x * ratio, rect.y * ratio
+      );
+      Border.drawBorder(context, layout, { stockName });
+      context.setTransform(1, 0, 0, 1, 0, 0);
+    } catch (error) {
+      // A failing overlay must never break the preview; the flat frame stays.
+      console.error('[wx-spektrafilm][border] overlay failed', error);
+      this.frameKey = '';
+    }
+  },
+
+  onBorderTap(event) {
+    if (!this.data.hasPhoto) {
+      return;
+    }
+    this.setBorderStyle(event.currentTarget.dataset.id);
+  },
+
+  setBorderStyle(id) {
+    const style = Border.normalizeStyle(id);
+    if (style === this.border) {
+      return;
+    }
+    this.border = style;
+    if (this.renderer && typeof this.renderer.setFrame === 'function') {
+      this.renderer.setFrame(style);
+    }
+    this.setData({
+      borderStyle: style,
+      sheetResetEnabled: this.sheetResetState(),
+    });
+    this.schedulePreviewRender(true);
+  },
+
+  // The picker cards show the current photo as the framed sample.
+  updateBorderThumbSource() {
+    const stockId = this.data.selectedStock;
+    let src = '';
+    if (stockId) {
+      const location = this.findStockLocation(stockId);
+      const thumb = location
+        ? this.data.categories[location.category].stocks[location.stock].thumb
+        : null;
+      src = thumb && thumb.status === 'ready' ? thumb.src : '';
+    }
+    if (src !== this.data.borderThumbSrc) {
+      this.setData({ borderThumbSrc: src });
+    }
   },
 
   // --- phase machine -------------------------------------------------------
@@ -659,6 +849,7 @@ Page({
     this.renderer.setLut(images.base, stock, images.extended);
     this.activeStock = stock;
     this.setData({ selectedStock: stock.id, selectedStockName: stock.name });
+    this.updateBorderThumbSource();
     this.renderPreview();
   },
 
@@ -771,6 +962,10 @@ Page({
       this.onResetEffects();
       return;
     }
+    if (this.data.panel === ui.PANELS.BORDER) {
+      this.setBorderStyle(Border.NONE);
+      return;
+    }
     this.adjustments = ui.resetAdjustments();
     if (this.renderer) {
       this.renderer.setAdjustments(this.adjustments);
@@ -797,6 +992,9 @@ Page({
     }
     if (current === ui.PANELS.EFFECTS) {
       return !this.isEffectsDefault();
+    }
+    if (current === ui.PANELS.BORDER) {
+      return this.border !== Border.NONE;
     }
     return false;
   },
@@ -943,6 +1141,8 @@ Page({
         stockId: stock.id,
         adjustments: this.adjustments,
         effects: this.effects,
+        border: this.border,
+        stockName: stock.name,
         intensity: this.adjustments.intensity,
         halationStrength: this.effects.halation,
         maxTextureSize: this.renderer ? this.renderer.maxTextureSize : undefined,
@@ -1123,7 +1323,10 @@ Page({
         return;
       }
       try {
-        this.renderer.render(this.comparing ? 0 : this.adjustments.intensity);
+        const presentation = this.renderer.render(
+          this.comparing ? 0 : this.adjustments.intensity
+        );
+        this.syncFrameOverlay(presentation);
       } catch (error) {
         this.previewFrames = 0;
         this.showError(error.message);
@@ -1347,6 +1550,9 @@ Page({
     this.setData({
       [`categories[${location.category}].stocks[${location.stock}].thumb`]: thumb,
     });
+    if (stockId === this.data.selectedStock) {
+      this.updateBorderThumbSource();
+    }
   },
 
   findStockLocation(stockId) {
@@ -1640,6 +1846,7 @@ Page({
       this.renderer.clearPhoto();
     }
     this.transition('clear');
+    this.syncFrameOverlay(null);
     this.setData({
       hasPhoto: false,
       busy: false,
@@ -1670,6 +1877,9 @@ Page({
       this.stageRect = stageRect || null;
       if (canvasRect && canvasRect.width && canvasRect.height) {
         this.canvasNodeSize = { width: canvasRect.width, height: canvasRect.height };
+      }
+      if (this.frameCanvas && stageRect && stageRect.width && stageRect.height) {
+        this.sizeFrameCanvas(stageRect.width, stageRect.height);
       }
       if (this.renderer && stageRect && stageRect.width && stageRect.height) {
         this.lastBufferGeometry = this.renderer.resizeToCssSize(

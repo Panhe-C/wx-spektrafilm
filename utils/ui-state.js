@@ -370,10 +370,16 @@
   // overlays the lower part of the stage carries the extra controls. The
   // canvas is never resized by the sheet; the renderer fits the photo into
   // the visible part of the stage instead (see setPresentationInset).
-  const PANELS = Object.freeze({ NONE: '', ADJUST: 'adjust', EFFECTS: 'effects' });
-  const TABS = Object.freeze({ FILM: 'film', ADJUST: 'adjust', EFFECTS: 'effects' });
-  const TAB_LABELS = Object.freeze({ film: '胶片', adjust: '调整', effects: '效果' });
-  const SHEET_TITLES = Object.freeze({ adjust: '调整', effects: '效果' });
+  const PANELS = Object.freeze({
+    NONE: '', ADJUST: 'adjust', EFFECTS: 'effects', BORDER: 'border',
+  });
+  const TABS = Object.freeze({
+    FILM: 'film', ADJUST: 'adjust', EFFECTS: 'effects', BORDER: 'border',
+  });
+  const TAB_LABELS = Object.freeze({
+    film: '胶片', adjust: '调整', effects: '效果', border: '边框',
+  });
+  const SHEET_TITLES = Object.freeze({ adjust: '调整', effects: '效果', border: '边框' });
 
   /**
    * The sheet after a toolbar tap. 「胶片」 closes the sheet (the strip is
@@ -384,7 +390,7 @@
     if (!hasPhoto) {
       return PANELS.NONE;
     }
-    if (tab === TABS.ADJUST || tab === TABS.EFFECTS) {
+    if (tab === TABS.ADJUST || tab === TABS.EFFECTS || tab === TABS.BORDER) {
       return current === tab ? PANELS.NONE : tab;
     }
     return PANELS.NONE;
@@ -392,7 +398,8 @@
 
   /** The toolbar tab that is highlighted for a sheet state. */
   function activeTab(panel) {
-    return panel === PANELS.ADJUST || panel === PANELS.EFFECTS ? panel : TABS.FILM;
+    return panel === PANELS.ADJUST || panel === PANELS.EFFECTS || panel === PANELS.BORDER
+      ? panel : TABS.FILM;
   }
 
   /**

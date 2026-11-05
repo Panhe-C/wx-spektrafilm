@@ -302,7 +302,14 @@ assert.equal(ui.nextPanel('adjust', 'unknown', true), '');
 assert.equal(ui.activeTab(''), 'film');
 assert.equal(ui.activeTab('adjust'), 'adjust');
 assert.equal(ui.activeTab('effects'), 'effects');
-assert.deepEqual(Object.keys(ui.TAB_LABELS), ['film', 'adjust', 'effects']);
+assert.deepEqual(Object.keys(ui.TAB_LABELS), ['film', 'adjust', 'effects', 'border']);
+assert.equal(ui.nextPanel('', 'border', true), 'border');
+assert.equal(ui.nextPanel('border', 'border', true), '', 'tapping the open border tab collapses it');
+assert.equal(ui.nextPanel('adjust', 'border', true), 'border');
+assert.equal(ui.nextPanel('border', 'film', true), '');
+assert.equal(ui.nextPanel('', 'border', false), '', 'no border sheet without a photo');
+assert.equal(ui.activeTab('border'), 'border');
+assert.equal(ui.SHEET_TITLES.border, '边框');
 assert.equal(ui.sheetCoverage({ top: 100, bottom: 900, height: 800 }, { top: 500 }), 400);
 assert.equal(ui.sheetCoverage({ top: 100, bottom: 900, height: 800 }, { top: 950 }), 0);
 assert.equal(ui.sheetCoverage({ top: 100, bottom: 900, height: 800 }, { top: 0 }), 600,
